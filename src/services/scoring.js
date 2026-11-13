@@ -54,6 +54,14 @@ export function isUnauthenticatedProbe(finding) {
 }
 
 /**
+ * Environmental scan result that must not be presented as a website defect.
+ * Coverage failures and unauthenticated probes have dedicated report sections.
+ */
+export function isEnvironmentalFinding(finding) {
+  return Boolean(finding && finding.findingType === 'environmental');
+}
+
+/**
  * Calculates a score based on findings and scan coverage.
  * @param {Array<Object>} findings - The list of findings.
  * @param {Object|number} [options={}] - Scoring options or coverage ratio.
@@ -180,6 +188,7 @@ export function summarizeFindings(findings, pages, options = {}) {
     score: 100,
     coverageFailures: 0,
     unauthenticatedProbes: 0,
+    environmentalFailures: 0,
     bySeverity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
     byCategory: {},
     byConfidence: { confirmed: 0, high: 0, medium: 0, low: 0 },
@@ -198,11 +207,14 @@ export function summarizeFindings(findings, pages, options = {}) {
   for (const finding of findings) {
     const isCoverage = isCoverageFailure(finding);
     const isUnauth = excludeUnauth && isUnauthenticatedProbe(finding);
+    const isEnvironmental = !isCoverage && !isUnauth && isEnvironmentalFinding(finding);
 
     if (isCoverage) {
       summary.coverageFailures++;
     } else if (isUnauth) {
       summary.unauthenticatedProbes++;
+    } else if (isEnvironmental) {
+      summary.environmentalFailures++;
     } else {
       // Normal content finding
       summary.totalFindings++;
@@ -217,7 +229,7 @@ export function summarizeFindings(findings, pages, options = {}) {
     // excluded unauthenticated probes are infrastructure noise, not content
     // defects, so they stay out of bySeverity too. Invariant: the sum of
     // bySeverity always equals totalFindings.
-    if (!isCoverage && !isUnauth && finding.severity && summary.bySeverity.hasOwnProperty(finding.severity)) {
+    if (!isCoverage && !isUnauth && !isEnvironmental && finding.severity && summary.bySeverity.hasOwnProperty(finding.severity)) {
       summary.bySeverity[finding.severity]++;
     }
 
@@ -241,7 +253,7 @@ export function summarizeFindings(findings, pages, options = {}) {
     summary.byOrigin[originKey]++;
 
     // Additional aggregates
-    if (!isCoverage && !isUnauth) {
+    if (!isCoverage && !isUnauth && !isEnvironmental) {
       if (finding.findingType === 'warning') {
         summary.observationCount++;
       }

@@ -227,6 +227,17 @@ describe('generateHtmlReport (regression)', () => {
           unauthenticated: true,
           description: 'Probe replayed anonymously - requires session or CSRF token.',
         },
+        {
+          id: 'ENV-001',
+          title: 'Request blocked by proxy',
+          severity: 'info',
+          confidence: 'low',
+          category: 'network',
+          findingType: 'environmental',
+          ruleId: 'network-error',
+          pageUrl: 'https://example.com/api',
+          description: 'ERR_TUNNEL_CONNECTION_FAILED',
+        },
       ],
     };
 
@@ -239,6 +250,8 @@ describe('generateHtmlReport (regression)', () => {
     // Check unauthenticated probe section
     assert.match(html, /Needs manual verification/);
     assert.match(html, /requires session or CSRF token/);
+    assert.match(html, /Environmental scan limitations/);
+    assert.match(html, /not confirmed defects in the website/);
 
     // Check coverage line displayed directly next to score
     assert.match(html, /3\/5 pages scanned \(60% coverage\)/);
@@ -248,6 +261,7 @@ describe('generateHtmlReport (regression)', () => {
     assert.equal(json.coverage.coverageRatio, 0.6);
     assert.equal(json.coverageFailures.length, 1);
     assert.equal(json.unauthenticatedProbes.length, 1);
+    assert.equal(json.environmentalFailures.length, 1);
     assert.equal(json.summary.totalFindings, 1, 'Only genuine content findings in totalFindings');
   });
 

@@ -1,5 +1,5 @@
 import { computeCompliance } from './compliance.js';
-import { isCoverageFailure, isUnauthenticatedProbe, calculateScore } from './scoring.js';
+import { isCoverageFailure, isUnauthenticatedProbe, isEnvironmentalFinding, calculateScore } from './scoring.js';
 import { chromium } from 'playwright';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -166,7 +166,12 @@ export function generateHtmlReport(run) {
     ? run.coverageFailures
     : allFindings.filter(isCoverageFailure);
   const unauthProbesList = allFindings.filter(isUnauthenticatedProbe);
-  const contentFindings = allFindings.filter(f => !isCoverageFailure(f) && !isUnauthenticatedProbe(f));
+  const environmentalFailuresList = allFindings.filter(f =>
+    isEnvironmentalFinding(f) && !isCoverageFailure(f) && !isUnauthenticatedProbe(f)
+  );
+  const contentFindings = allFindings.filter(f =>
+    !isCoverageFailure(f) && !isUnauthenticatedProbe(f) && !isEnvironmentalFinding(f)
+  );
 
   const failedUrls = new Set(coverageFailuresList.map(f => f.pageUrl).filter(Boolean));
   const pagesAttempted = run.coverage?.pagesAttempted ?? (run.pages ? run.pages.length : (run.options?.maxPages || 1));
@@ -301,11 +306,31 @@ export function generateHtmlReport(run) {
         ${f.suggestedFix ? `<p style="margin: 8px 0 0 0;"><strong>Suggested Fix:</strong> ${escapeHtml(f.suggestedFix)}</p>` : ''}
       </div>`;
     }
+
     unauthSectionHtml += `</section>`;
   }
 
+  let environmentalSectionHtml = '';
+  if (environmentalFailuresList.length > 0) {
+    environmentalSectionHtml = `
+    <section class="environmental-failures" style="margin: 24px 0; padding: 20px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px;">
+      <h2 style="color: #1e3a8a; margin-top: 0;">Environmental scan limitations (${environmentalFailuresList.length})</h2>
+      <p style="color: #1e40af; font-size: 14px; margin-bottom: 16px;">
+        These results came from the scanner environment, network, proxy, rate limits, authentication state, or browser transport. They are not confirmed defects in the website and are excluded from website findings and scoring.
+      </p>
+      ${environmentalFailuresList.map(f => `
+      <div class="finding-card" style="border-left: 4px solid #3b82f6; background: #fff; margin-bottom: 12px; padding: 14px; border-radius: 4px;">
+        <h4 style="margin: 0 0 8px 0;">${escapeHtml(f.title)} <span class="badge" style="background: #3b82f6; color: #fff;">ENVIRONMENTAL</span></h4>
+        <p style="margin: 4px 0;"><strong>URL:</strong> ${renderLink(f.pageUrl)}</p>
+        <p style="margin: 4px 0; color: #475569;">${escapeHtml(f.description || '')}</p>
+        ${f.evidence ? `<pre style="margin-top: 8px; background: #f8fafc; padding: 8px; border-radius: 4px; font-size: 12px; overflow-x: auto;">${escapeHtml(f.evidence)}</pre>` : ''}
+      </div>`).join('')}
+    </section>`;
+  }
+
   const s = run.summary || {};
-  const isLegacySummary = s.coverageFailures == null && (coverageFailuresList.length > 0 || unauthProbesList.length > 0);
+  const isLegacySummary = s.coverageFailures == null &&
+    (coverageFailuresList.length > 0 || unauthProbesList.length > 0 || environmentalFailuresList.length > 0);
   const totalFindings = isLegacySummary ? contentFindings.length : (s.totalFindings ?? contentFindings.length);
   const confirmedBugs = isLegacySummary
     ? contentFindings.filter(f => f.confidence === 'confirmed' && f.findingType === 'bug').length
@@ -498,6 +523,7 @@ export function generateHtmlReport(run) {
     </div>
 
     ${coverageSectionHtml}
+    ${environmentalSectionHtml}
     ${unauthSectionHtml}
 
     ${wcagSectionHtml(run)}
@@ -563,7 +589,12 @@ export function generateJsonReport(run) {
     ? run.coverageFailures
     : allFindings.filter(isCoverageFailure);
   const unauthProbesList = allFindings.filter(isUnauthenticatedProbe);
-  const contentFindings = allFindings.filter(f => !isCoverageFailure(f) && !isUnauthenticatedProbe(f));
+  const environmentalFailuresList = allFindings.filter(f =>
+    isEnvironmentalFinding(f) && !isCoverageFailure(f) && !isUnauthenticatedProbe(f)
+  );
+  const contentFindings = allFindings.filter(f =>
+    !isCoverageFailure(f) && !isUnauthenticatedProbe(f) && !isEnvironmentalFinding(f)
+  );
 
   const failedUrls = new Set(coverageFailuresList.map(f => f.pageUrl).filter(Boolean));
   const pagesAttempted = run.coverage?.pagesAttempted ?? (run.pages ? run.pages.length : (run.options?.maxPages || 1));
@@ -613,6 +644,7 @@ export function generateJsonReport(run) {
     },
     coverageFailures: coverageFailuresList,
     unauthenticatedProbes: unauthProbesList,
+    environmentalFailures: environmentalFailuresList,
     summary: {
       totalPages: s.totalPages ?? (run.pages ? run.pages.length : 0),
       totalFindings: (s.coverageFailures == null && (coverageFailuresList.length > 0 || unauthProbesList.length > 0)) ? contentFindings.length : (s.totalFindings ?? contentFindings.length),
@@ -625,6 +657,7 @@ export function generateJsonReport(run) {
       confirmedBugs: s.confirmedBugs ?? 0,
       coverageFailures: coverageFailuresList.length,
       unauthenticatedProbes: unauthProbesList.length,
+      environmentalFailures: environmentalFailuresList.length,
       totalFindingsShown: (s.confirmedBugs ?? 0) + unauthProbesList.length + coverageFailuresList.length,
       observationCount: s.observationCount ?? 0,
       recommendationCount: s.recommendationCount ?? 0,
