@@ -278,11 +278,12 @@ describe('IssueTrackerPublisher', () => {
     const adapter = makeMockAdapter();
     const publisher = new IssueTrackerPublisher({ adapter });
 
-    // 3 findings, all same signature → should file 1 issue
+    // 3 findings, all same fine-grained signature (same rule+page+element,
+    // no selector → element falls back to the title hash) → 1 issue
     const findings = [
-      { ruleId: 'r', pageUrl: 'https://example.com/a', severity: 'high', title: 'Bug 1', category: 'links', occurrences: 1 },
-      { ruleId: 'r', pageUrl: 'https://example.com/a', severity: 'medium', title: 'Bug 2', category: 'links', occurrences: 1 },
-      { ruleId: 'r', pageUrl: 'https://example.com/a', severity: 'low', title: 'Bug 3', category: 'links', occurrences: 1 },
+      { ruleId: 'r', pageUrl: 'https://example.com/a', severity: 'high', title: 'Same bug', category: 'links', occurrences: 1 },
+      { ruleId: 'r', pageUrl: 'https://example.com/a', severity: 'medium', title: 'Same bug', category: 'links', occurrences: 1 },
+      { ruleId: 'r', pageUrl: 'https://example.com/a', severity: 'low', title: 'Same bug', category: 'links', occurrences: 1 },
     ];
 
     const result = await publisher.publish(findings);

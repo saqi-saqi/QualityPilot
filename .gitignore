@@ -1,13 +1,9 @@
 # Dependencies
 node_modules/
 
-# Runtime data & SQLite databases
-data/*.sqlite*
-data/*.json
-data/screenshots/
-data/sessions/
-data/.session.key
-data/archive_json/
+# Runtime data & SQLite databases — nothing in data/ is ever tracked
+# (sessions, keys, screenshots, reports, SQLite DBs all live there)
+data/
 
 # Environment files
 .env

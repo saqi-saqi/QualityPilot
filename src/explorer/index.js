@@ -17,6 +17,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { TestPlan, transitionStatus } from '../services/testPlan.js';
+import { config } from '../utils/config.js';
 import { inferFlows } from './flowInferrer.js';
 import { inferApiEndpoints } from './apiInferrer.js';
 import { inferFuzzTargets } from './fuzzInferrer.js';
@@ -25,6 +26,20 @@ import { inferPerfBudgets } from './perfInferrer.js';
 import { inferVisualBaselines, inferViewports } from './visualInferrer.js';
 import { chatJson, getDefaultProvider } from './llmProvider.js';
 import { pageSummaryPrompt, riskPrioritizationPrompt } from './prompts.js';
+
+/**
+ * Default browser list: config.defaultBrowsers when configured (array,
+ * non-empty), else ['chromium']. options.browsers still wins.
+ */
+function defaultBrowsers(options = {}) {
+  if (Array.isArray(options.browsers) && options.browsers.length) {
+    return options.browsers;
+  }
+  if (Array.isArray(config?.defaultBrowsers) && config.defaultBrowsers.length) {
+    return config.defaultBrowsers;
+  }
+  return ['chromium'];
+}
 
 /**
  * Build a proposed TestPlan from a crawl result.
@@ -52,7 +67,7 @@ export async function buildTestPlan({ pages, targetUrl, siteOrigin, llmOpts = {}
   const viewports = inferViewports({ pages });
 
   const [a11yRules, perfBudgets, visualBaselines] = await Promise.all([
-    Promise.resolve(inferA11yRules({ pages })),
+    Promise.resolve(inferA11yRules({ pages, fast: options.a11yFast === true })),
     Promise.resolve(inferPerfBudgets({ pages })),
     Promise.resolve(inferVisualBaselines({ pages, viewports })),
   ]);
@@ -128,7 +143,7 @@ export async function buildTestPlan({ pages, targetUrl, siteOrigin, llmOpts = {}
     perfBudgets,
     visualBaselines,
     viewports,
-    browsers: ['chromium'],
+    browsers: defaultBrowsers(options),
     executors: [
       'e2e',
       'api-contract',

@@ -27,7 +27,7 @@ const HEADER_RULES = [
     severity: 'high',
     description: 'HSTS forces HTTPS, preventing protocol downgrade attacks.',
     fix: 'Add `Strict-Transport-Security: max-age=31536000; includeSubDomains; preload`.',
-    check: (val) => val != null && /max-age\s*=\s*\d{4,}/i.test(val),
+    check: (val) => val != null && /max-age\s*=\s*\d+/i.test(val),
     onlyHttps: true,
   },
   {
@@ -123,7 +123,97 @@ export function analyzeCookie(cookieStr, pageUrl) {
     });
   }
 
+  if (name?.startsWith('__Secure-') && !hasSecure) {
+    issues.push({
+      ruleId: 'cookie-secure-prefix-insecure',
+      severity: 'high',
+      message: `Cookie "${name}" uses the __Secure- prefix without Secure`,
+      fix: 'Cookies with the __Secure- prefix must include the Secure attribute.',
+    });
+  }
+  if (name?.startsWith('__Host-')) {
+    const hasPathRoot = attrs.some(attr => attr === 'path=/');
+    const hasDomain = attrs.some(attr => attr.startsWith('domain='));
+    if (!hasSecure || !hasPathRoot || hasDomain) {
+      issues.push({
+        ruleId: 'cookie-host-prefix-invalid',
+        severity: 'high',
+        message: `Cookie "${name}" does not meet __Host- prefix requirements`,
+        fix: 'Use Secure; Path=/; and omit Domain for __Host- cookies.',
+      });
+    }
+  }
+
   return issues;
+}
+
+/** Identify CSP values that substantially weaken script-injection defenses. */
+export function analyzeCsp(csp) {
+  if (!csp) return [];
+  const normalized = csp.toLowerCase();
+  const issues = [];
+  if (/(script-src|default-src)[^;]*'unsafe-inline'/.test(normalized)) {
+    issues.push({
+      ruleId: 'csp-unsafe-inline', severity: 'high',
+      message: 'CSP allows unsafe inline scripts',
+      fix: 'Replace unsafe-inline with nonces or hashes for the required inline scripts.',
+    });
+  }
+  if (/(script-src|default-src)[^;]*'unsafe-eval'/.test(normalized)) {
+    issues.push({
+      ruleId: 'csp-unsafe-eval', severity: 'high',
+      message: 'CSP allows unsafe eval execution',
+      fix: 'Remove unsafe-eval and update libraries that require dynamic code execution.',
+    });
+  }
+  // The combination is materially weaker than either alone: inline+eval
+  // script defeats nonce/hash-based hardening entirely. Reported once as a
+  // confirmed medium alongside the two high-severity singles above.
+  if (/(script-src|default-src)[^;]*'unsafe-inline'/.test(normalized)
+    && /(script-src|default-src)[^;]*'unsafe-eval'/.test(normalized)) {
+    issues.push({
+      ruleId: 'csp-inline-and-eval', severity: 'medium',
+      message: 'CSP allows inline+eval script',
+      fix: "Remove 'unsafe-inline' and 'unsafe-eval' from script-src; use nonces or hashes plus a CSP-compatible bundler.",
+    });
+  }
+  if (/(default-src|script-src)[^;]*\*/.test(normalized)) {
+    issues.push({
+      ruleId: 'csp-wildcard-source', severity: 'medium',
+      message: 'CSP permits wildcard content sources',
+      fix: 'Replace wildcard sources with the exact trusted origins required by the application.',
+    });
+  }
+  if (!/(^|;)\s*object-src\s/.test(normalized)) {
+    issues.push({
+      ruleId: 'csp-missing-object-src', severity: 'low',
+      message: 'CSP does not restrict plugin content with object-src',
+      fix: "Add `object-src 'none'` to the Content-Security-Policy.",
+    });
+  }
+  if (!/(^|;)\s*base-uri\s/.test(normalized)) {
+    issues.push({
+      ruleId: 'csp-missing-base-uri', severity: 'low',
+      message: 'CSP does not restrict document base URL changes',
+      fix: "Add `base-uri 'self'` to the Content-Security-Policy.",
+    });
+  }
+  return issues;
+}
+
+/** Flag an invalidly permissive credentialed CORS policy. */
+export function analyzeCors(headers) {
+  const allowOrigin = headers['access-control-allow-origin']?.trim();
+  const allowCredentials = headers['access-control-allow-credentials']?.trim().toLowerCase();
+  if (allowOrigin === '*' && allowCredentials === 'true') {
+    return [{
+      ruleId: 'cors-wildcard-credentials',
+      severity: 'high',
+      message: 'CORS combines Access-Control-Allow-Origin: * with credentialed requests',
+      fix: 'Use an explicit, allow-listed origin when Access-Control-Allow-Credentials is true.',
+    }];
+  }
+  return [];
 }
 
 // ─── mixed content detection ────────────────────────────────────────
@@ -226,6 +316,21 @@ export default async function securityExecutor(ctx) {
       continue;
     }
 
+    if (!isHttps) {
+      findings.push(ctx.createFinding({
+        title: 'Page is served over unencrypted HTTP',
+        severity: 'high',
+        confidence: 'confirmed',
+        category: 'network',
+        findingType: 'bug',
+        origin: 'first-party',
+        ruleId: 'transport-http',
+        pageUrl: url,
+        description: 'HTTP traffic can be intercepted or modified before it reaches the browser.',
+        suggestedFix: 'Redirect all HTTP requests to HTTPS and serve the application only over TLS.',
+      }));
+    }
+
     // Header rules
     for (const rule of HEADER_RULES) {
       if (rule.onlyHttps && !isHttps) continue;
@@ -246,6 +351,24 @@ export default async function securityExecutor(ctx) {
           suggestedFix: rule.fix,
         }));
       }
+    }
+
+    const policyIssues = [
+      ...analyzeCsp(probe.headers['content-security-policy']),
+      ...analyzeCors(probe.headers),
+    ];
+    for (const issue of policyIssues) {
+      findings.push(ctx.createFinding({
+        title: issue.message,
+        severity: issue.severity,
+        confidence: 'confirmed',
+        category: 'network',
+        findingType: issue.severity === 'low' ? 'recommendation' : 'bug',
+        origin: 'first-party',
+        ruleId: issue.ruleId,
+        pageUrl: url,
+        suggestedFix: issue.fix,
+      }));
     }
 
     // Cookie rules

@@ -1,8 +1,8 @@
 # TestFlow
 
-> Autonomous software QA agent for web applications and APIs — crawls, infers test plans, executes matrix test suites across browsers, viewports, and auth roles, and files regressions to your issue tracker.
+> Autonomous software QA agent for web applications and APIs — crawls, infers test plans (with human approval), executes matrix test suites across browsers, viewports, and authenticated roles, files deduplicated regressions to your issue tracker, and gates your CI pipeline.
 
-TestFlow is a zero-cost, self-hostable QA testing platform built on Node.js and Playwright. Give it any target web URL and TestFlow will autonomously crawl pages, inspect network waterfalls with automatic privacy redaction, generate test suites via an AI planner or deterministic heuristics, and run combinatorial tests across browsers (Chromium, Firefox, WebKit), responsive viewports, and authenticated roles. All runs, monitors, and job queues are persisted locally in SQLite with zero cloud dependencies.
+TestFlow is a zero-cost, self-hostable QA testing platform built on Node.js and Playwright. Give it any target web URL and TestFlow will autonomously crawl pages, inspect network waterfalls with automatic privacy redaction, generate test suites via an AI planner (or deterministic heuristics), and run combinatorial tests across browsers, responsive viewports, and authenticated sessions. All runs, monitors, job queues, flaky history, visual baselines, and finding triage state are persisted locally in SQLite with zero cloud dependencies.
 
 ---
 
@@ -26,6 +26,8 @@ npm run start:dashboard
 ```
 Open **[http://localhost:8080](http://localhost:8080)** in your browser.
 
+> **Security defaults**: the dashboard binds to `127.0.0.1` only (override with `SQA_BIND`), ships with helmet security headers and API rate limiting, and **refuses to start without an API token when `NODE_ENV=production`**.
+
 ### 3. Run Your First Scan
 Trigger a headless scan against any public site directly from your terminal:
 ```bash
@@ -41,9 +43,33 @@ curl -X POST http://localhost:8080/api/runs \
     }
   }'
 ```
-Or open the dashboard UI at `http://localhost:8080`, type `https://example.com`, and click **Start Test**.
+Or open the dashboard UI at `http://localhost:8080`, type `https://example.com`, and click **Start Test** — or click **🧭 Review plan** first to inspect, prune, and approve the AI-generated test plan before anything runs.
 
 *(To test local dev sites on `localhost`, set `SQA_ALLOW_PRIVATE=true` in `.env`)*
+
+### Use FreeLLMAPI locally
+
+TestFlow can use a local [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi)
+gateway through its OpenAI-compatible endpoint:
+
+```dotenv
+SQA_LLM_PROVIDER=openai
+OPENAI_BASE_URL=http://localhost:3001/v1
+OPENAI_API_KEY=<the-unified-key-from-FreeLLMAPI>
+OPENAI_MODEL=auto
+```
+
+Keep the key in `.env` or your user-level environment; do not commit it or
+place it in VS Code workspace settings. For VS Code coding assistance, install
+an OpenAI-compatible extension such as Continue, Cline, or Roo Code and use:
+
+- Base URL: `http://localhost:3001/v1`
+- API key: your FreeLLMAPI unified key
+- Model: `auto` (or a model shown by FreeLLMAPI's `/v1/models` endpoint)
+
+The built-in GitHub Copilot service cannot be redirected to a custom endpoint;
+these extensions are separate clients. Keep FreeLLMAPI bound to localhost and
+do not expose port `3001` publicly.
 
 ---
 
@@ -70,7 +96,7 @@ Add this configuration snippet to your `.mcp.json` (Claude Code) or Cursor MCP s
 ```
 
 > **Why `SQA_ALLOW_PRIVATE=true`?**
-> TestFlow's enterprise SSRF boundary blocks private IP ranges (`127.0.0.1`, `10.0.0.0/8`, `192.168.0.0/16`, cloud metadata endpoints) by default. Setting `SQA_ALLOW_PRIVATE="true"` permits local loopback scanning so your agent can verify `http://localhost:3000` or local dev servers.
+> TestFlow's enterprise SSRF boundary blocks private IP ranges (`127.0.0.1`, `10.0.0.0/8`, `192.168.0.0/16`, CGNAT, cloud metadata endpoints) by default. Setting `SQA_ALLOW_PRIVATE="true"` permits local loopback scanning so your agent can verify `http://localhost:3000` or local dev servers.
 
 > **Security Note**: The `stdio` transport runs as a local subprocess with zero network exposure. If an HTTP/SSE transport is enabled for remote access in the future, token authentication becomes mandatory.
 
@@ -78,7 +104,7 @@ Add this configuration snippet to your `.mcp.json` (Claude Code) or Cursor MCP s
 
 | Tool | Purpose | Latency |
 | :--- | :--- | :--- |
-| `quick_check(url, scope?)` | Fast check (axe a11y + API contract + console/network errors) on a single page | ~1–5s |
+| `quick_check(url, scope?)` | Fast check (axe a11y + API contract + console/network errors) on a single page | ~5–15s |
 | `check_accessibility(url)` | Focused WCAG a11y audit (axe-core) for markup & styling changes | ~1–3s |
 | `check_api_contract(url, endpoints?)` | Probes REST endpoints for unexpected status codes or broken response schemas | ~100ms–2s |
 | `explain_finding(rule_id)` | Plain-language explanation + recommended fix for any rule ID (e.g. `image-alt`) | Immediate |
@@ -109,7 +135,7 @@ TestFlow runs on 100% free, official Docker base images with zero external servi
 cp .env.example .env
 docker compose up -d --build
 ```
-Your dashboard is live on port `8080`, with SQLite database and screenshots persisted to `./data`.
+Your dashboard is live on `http://127.0.0.1:8080` (the compose file publishes the port to loopback only), running as a non-root user, with the SQLite database and screenshots persisted to `./data`.
 
 ---
 
@@ -118,51 +144,95 @@ Your dashboard is live on port `8080`, with SQLite database and screenshots pers
 ```mermaid
 flowchart TD
     subgraph Discovery ["Discovery & Crawl Engine"]
-        URL["Target URL"] --> Crawler["Playwright Crawler"]
+        URL["Target URL"] --> Crawler["Playwright Crawler (SSRF-pinned, SPA-settle)"]
         Crawler --> Sanitizer["Privacy & Secret Redaction (prompts.js)"]
         Crawler --> Network["Network API Interceptor"]
     end
 
     subgraph Planning ["Intelligence & Plan Inference"]
         Sanitizer & Network --> Inferrer["Inference Engine"]
-        LLM["Pluggable LLM (GLM / OpenAI / Mock)"] <-->|Anonymized DOM Shapes Only| Inferrer
-        Inferrer --> Plan["Structured TestPlan"]
+        LLM["Pluggable LLM (GLM / OpenAI-compatible / Mock)"] <-->|Anonymized DOM Shapes Only| Inferrer
+        Inferrer --> Draft["Plan Draft → Human Review & Pruning"]
+        Draft --> Plan["Approved Structured TestPlan"]
     end
 
     subgraph Matrix ["Combinatorial Execution Matrix"]
         Plan --> MRunner["Matrix Runner"]
-        BrowserPool["BrowserPool (Chromium / Firefox / WebKit)"] <--> MRunner
-        
-        MRunner --> Exe1["API Contract & Schema Validator"]
+        BrowserPool["BrowserPool (Chromium / Firefox / WebKit, sandboxed)"] <--> MRunner
+
+        MRunner --> Exe1["API Contract & Schema Validator (+latency budgets)"]
         MRunner --> Exe2["Security, Cookies & Mixed Content"]
-        MRunner --> Exe3["E2E User Flow Assertions"]
-        MRunner --> Exe4["WCAG A11y Deep (axe-core)"]
-        MRunner --> Exe5["CDP Performance Metrics (LCP/CLS/TBT)"]
-        MRunner --> Exe6["Visual Pixel Diff"]
+        MRunner --> Exe3["E2E Flows (self-healing selectors + hybrid API steps)"]
+        MRunner --> Exe4["WCAG A11y Deep (axe-core, full WCAG universe)"]
+        MRunner --> Exe5["CDP Performance Metrics (LCP/CLS/TBT/INP, optional throttle)"]
+        MRunner --> Exe6["Visual Pixel Diff (persistent baselines + diff images)"]
     end
 
     subgraph Persistence ["Zero-Cost Storage & Queue"]
         MRunner --> Dedup["Cross-Cell Finding Deduplication"]
-        Dedup --> SQLite[("SQLite Database (better-sqlite3)\n- runs\n- monitors\n- job_queue\n- flaky_history")]
+        Dedup --> SQLite[("SQLite Database (better-sqlite3)\n- runs, monitors, job_queue\n- flaky_history, finding_states\n- baselines, plan_drafts")]
         Queue["SQLite Job Queue (Crash-Resilient)"] --> MRunner
     end
 
-    subgraph Outbound ["Dispatch & Reporting"]
-        SQLite --> Dash["Real-Time SSE Dashboard"]
-        SQLite --> Reports["HTML & JSON Reports"]
+    subgraph Outbound ["Dispatch, Reporting & Gates"]
+        SQLite --> Dash["Real-Time SSE Dashboard (triage, diffs, roles)"]
+        SQLite --> Reports["HTML & JSON + JUnit & SARIF Reports"]
         SQLite --> Trackers["Issue Trackers (GitHub / Jira)"]
-        SQLite --> Webhooks["Webhook Notifications (Slack / Discord)"]
+        SQLite --> TCM["Test Results (TestRail / Xray)"]
+        SQLite --> Gate["CLI Quality Gate (--fail-on / --min-score)"]
     end
 ```
 
 ### Module Breakdown
-- **`src/matrix/`**: Combinatorial execution engine testing $\text{Browsers} \times \text{Viewports} \times \text{Auth Roles}$. Deduplicates findings by `(ruleId, pageUrl)` and tracks non-deterministic flaky tests.
-- **`src/storage/`**: Relational persistence via `better-sqlite3`. Includes ANSI SQL schema (`runs`, `monitors`, `job_queue`, `flaky_history`) designed for future zero-friction migration to PostgreSQL.
-- **`src/services/jobQueue.js`**: Atomic SQLite-backed job queue. Guarantees in-flight and queued runs survive process crashes and restarts without Redis or BullMQ.
-- **`src/explorer/`**: AI test planner. Generates E2E user flows and API schema expectations using anonymized DOM structure.
-- **`src/services/ssrf.js`**: Enterprise SSRF protection. Blocks IPv4/IPv6 private subnets, link-local, unique-local, and DNS-rebinding attacks with TTL-based DNS caching.
-- **`src/services/sessionStore.js`**: Encrypted "record-once login" store using AES-256-GCM. Allows authenticated scanning without saving user credentials in plain text.
-- **`src/services/compliance.js`**: Maps axe-core accessibility audit rules directly to WCAG 2.x Level A/AA criteria.
+- **`src/matrix/`**: Combinatorial execution engine testing $\text{Browsers} \times \text{Viewports} \times \text{Auth Roles}$. Deduplicates findings by `(ruleId, pageUrl, element)` and tracks flaky tests (grouped by normalized options, ≥3 alternations required).
+- **`src/storage/`**: Relational persistence via `better-sqlite3` with `PRAGMA user_version` migrations — `runs`, `monitors`, `job_queue`, `flaky_history`, `finding_states`, `baselines`, `plan_drafts` — designed for future zero-friction migration to PostgreSQL.
+- **`src/services/jobQueue.js`**: Atomic SQLite-backed job queue. Guarantees in-flight and queued runs survive process crashes and restarts without Redis or BullMQ; interrupted runs are recovered and marked failed on boot, and SIGTERM/SIGINT drain cleanly.
+- **`src/explorer/`**: AI test planner. Generates E2E user flows (with self-healing-selector-aware inference and `needsReview` flags for hallucinated selectors) and API schema expectations using anonymized DOM structure. Flags flows for review when selectors were never observed in the crawl.
+- **`src/executors/selectorResolver.js`**: Deterministic selector self-healing ladder (original → `data-testid`/`data-test`/`aria-label` → role → text). Heals rotting selectors instead of failing noisily.
+- **`src/services/testData.js`**: Test-data store (`data/testdata.json` + `SQA_TD_*` env vars) with `${VAR}` substitution in flow steps — no invented credentials.
+- **`src/services/ssrf.js`**: Enterprise SSRF protection. Blocks IPv4/IPv6 private subnets, CGNAT, link-local, unique-local, 6to4/NAT64; validates **every** plan URL (flows, navigate steps, API endpoints) before any browser launches, and pins validated IPs via Chromium `--host-resolver-rules` to defeat DNS rebinding.
+- **`src/services/sessionStore.js`**: Encrypted "record-once login" store using AES-256-GCM with a per-install random salt. Supports multiple named roles per monitor (e.g. `admin`, `customer`) without saving user credentials in plain text.
+- **`src/services/compliance.js`**: Maps axe-core accessibility audit rules to WCAG 2.x A/AA criteria over the **full WCAG-tagged axe rule universe**, marks partial coverage honestly, and exports VPAT-style evidence reports.
+- **`src/services/runDiff.js`**: Run-to-run comparison — new / resolved / persistent findings and score delta.
+- **`src/reporting/`**: JUnit XML and SARIF 2.1.0 serializers for CI pipelines.
+- **`src/cli/check.js`**: CI quality gate — exit codes driven by severity thresholds and minimum score, plus `--junit`/`--sarif` report export.
+
+---
+
+## 🔁 Continuous Monitoring & Triage
+
+- **Monitors** re-scan targets on a schedule with duplicate-trigger protection, catch-up after downtime, and per-monitor settings.
+- **Record-once logins** capture a session (2FA/CAPTCHA included — you log in yourself) encrypted at rest; record **multiple roles** per monitor and the matrix replays each role.
+- **Finding triage**: mark findings `acknowledged` / `false positive` / `fixed` in the dashboard — state persists across runs.
+- **Run diff**: "Compare with previous run" shows exactly what's new, resolved, and persistent, with a score delta.
+- **Flaky tracking**: results feed a flaky-history table (grouped by options hash; labeled flaky only after ≥3 alternations).
+- **Retention**: old runs and screenshots are cleaned up automatically (checked at boot and every 6 hours).
+
+## 🚦 CI Quality Gates
+
+Fail builds on quality regressions straight from the CLI:
+
+```bash
+npm run check -- https://staging.example.com \
+  --max-pages 10 \
+  --fail-on critical,high \
+  --min-score 80 \
+  --junit test-results.xml \
+  --sarif testflow.sarif
+```
+- `--fail-on critical,high` → exit 1 when any **confirmed** finding at those severities exists (single value = threshold semantics).
+- `--min-score 80` → exit 1 when the quality score drops below 80.
+- JUnit XML and SARIF 2.1.0 output plug into GitHub Actions, GitLab, Azure DevOps, and code-scanning UIs.
+
+## 📋 Publish Results Where QA Lives
+
+- **TestRail**: `SQA_TESTRAIL_*` env vars + `data/testrail-map.json` (`{"ruleId::pageUrl": caseId}`) → creates a run and posts pass/fail per case. Unmapped findings are listed, never auto-created.
+- **Xray (Jira)**: `SQA_XRAY_*` env vars + `data/xray-map.json` (`{"signature": "TEST-123"}`) → imports an execution with PASS/FAILED per test key.
+- Or trigger both from the run page in the dashboard.
+
+## ♿ Accessibility Compliance Evidence
+
+The run page exports a **WCAG evidence report** (JSON): per-criterion pass/fail/not-tested status mapped over the full WCAG-tagged axe rule universe, with failing node selectors, tool versions, and a generation timestamp — the starting point for a VPAT/ACR. Conformance percentages are computed over the full universe and marked `partial` when the plan executed a subset.
 
 ---
 
@@ -176,9 +246,10 @@ TestFlow is developed as an open-core architecture. Everything needed to test, c
 | **Persistence** | Embedded SQLite (`better-sqlite3`) | Multi-tenant PostgreSQL (Supabase / RDS) |
 | **Job Queue** | SQLite persistent queue (`job_queue` table) | Distributed worker cluster |
 | **Issue Filing** | GitHub, Jira, Console | GitHub, Jira, GitLab, Linear, Asana |
-| **Dashboard** | Lightweight local SSE dashboard | Multi-tenant team workspace |
-| **Visual Testing** | Pixel-diff assertion engine | Interactive "Accept Baseline" approval UI |
-| **Authentication** | Local AES-256 session vault | Enterprise SAML / Okta SSO |
+| **Test Management** | TestRail, Xray (mapping files) | Native suite sync |
+| **Dashboard** | Lightweight local SSE dashboard (triage + diffs) | Multi-tenant team workspace |
+| **Visual Testing** | Persistent baselines + diff images (SQLite-backed) | Baseline approval workflow UI |
+| **Authentication** | Local AES-256 multi-role session vault | Enterprise SAML / Okta SSO |
 
 > **Architectural Seam Note**: The database schema in `src/storage/db.js` uses standard ANSI SQL (`TEXT`, `REAL`, `INTEGER`, JSON columns) and avoids SQLite-specific quirks. When enabling the hosted tier, swapping the SQLite driver for a PostgreSQL pool requires zero changes to the core business logic.
 
@@ -186,9 +257,11 @@ TestFlow is developed as an open-core architecture. Everything needed to test, c
 
 ## 🔒 Security & Privacy Guarantees
 
-1. **AI Anonymization**: Session cookies, Bearer tokens, and user passwords **never touch the LLM**. Request bodies are filtered and only structural shapes (e.g. `{"id": "string"}`) are sent to inference models. Enforced in `src/explorer/prompts.js` and verified by `test/llmPrivacy.test.js`.
-2. **Encrypted at Rest**: Recorded authenticated sessions are encrypted using **AES-256-GCM** with a persistent local key (`data/.session.key`) or your custom `SQA_SESSION_SECRET`.
-3. **SSRF Hardened**: Crawls and HTTP probes are validated against public IP ranges. Internal subnet probing and localhost scanning are strictly blocked by default.
+1. **AI Anonymization**: Session cookies, Bearer tokens, and user passwords **never touch the LLM**. Request bodies are filtered and only structural shapes (e.g. `{"id": "string"}`) are sent to inference models; page content is wrapped in untrusted-data delimiters with prompt-injection guards. Enforced in `src/explorer/prompts.js` and verified by `test/llmPrivacy.test.js`.
+2. **Encrypted at Rest**: Recorded authenticated sessions are encrypted using **AES-256-GCM** with a per-install random salt and a persistent local key (`data/.session.key`) or your custom `SQA_SESSION_SECRET`.
+3. **SSRF Hardened**: Crawls, HTTP probes, and **every URL inside a test plan** (flow start URLs, navigate steps, API endpoints) are validated against public IP ranges — including CGNAT and 6to4/NAT64 ranges — and validated DNS answers are pinned into the browser to defeat DNS-rebinding. `file:`/`data:`/`ftp:` URLs are rejected outright.
+4. **Hardened by default**: sandboxed Chromium (no `--no-sandbox` unless you explicitly opt in), non-root Docker user, loopback-only bind, helmet headers, per-IP rate limiting, timing-safe token comparison, constant-coverage auto-close in the issue tracker (partial scans never close bugs), and cross-origin API probes blocked.
+5. **Secret hygiene**: recorded session capture is only accepted from the monitored origin, `Secure` cookies are never replayed over plain HTTP, and the MCP layer re-redacts keys/tokens (including `ghp_`, `sk-`, `xox`, AWS, and generic secret-shaped values) before anything leaves the process.
 
 ---
 
@@ -199,7 +272,7 @@ TestFlow has a comprehensive unit and integration test suite:
 ```bash
 npm test
 ```
-All **500+ tests** run via Node.js native test runner in ~11 seconds with zero external dependencies.
+All **~900 tests** run via Node.js native test runner in ~25 seconds with zero external dependencies (the runner works on every supported Node version, 20+).
 
 ---
 

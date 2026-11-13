@@ -16,6 +16,9 @@
  *   ctx.signal                  — AbortSignal
  */
 
+import { safeFetch } from '../services/ssrf.js';
+import { config } from '../utils/config.js';
+
 const DEFAULT_TIMEOUT_MS = 15000;
 
 /** Build a fetch with timeout via AbortController */
@@ -58,8 +61,14 @@ function buildUrl(endpoint, fallbackOrigin) {
  * Verify a response body against a (very minimal) JSON schema.
  * The schema is the one inferred by apiInferrer — top-level shape only.
  * Supports:
- *   { type: 'object', properties: {...} }     — checks each prop exists
- *   { type: 'array' }                        — checks Array.isArray
+ *   { type: 'object', properties: {...}, required?: [...] } — keys listed in
+ *     `required` must exist; other properties are type-checked only when
+ *     present (apiInferrer marks a key required only if it appeared in ≥2
+ *     observed responses, softening false mismatches from one-off fields)
+ *   { type: 'array', items?: {...} }          — checks Array.isArray; item
+ *     shapes are validated ONLY when the plan declares schema.items
+ *   { type: 'object', properties: {...} } without `required` — checks each
+ *     prop exists (legacy behavior)
  *   { type: 'string' | 'number' | 'boolean' } — checks typeof
  *   plain object { field: 'string' }         — legacy format, checks each key
  *   plain array [...]                         — checks body is array
@@ -82,19 +91,31 @@ export function verifySchema(body, schema) {
         return { ok: false, mismatches: [`expected object, got ${Array.isArray(body) ? 'array' : typeof body}`] };
       }
       if (schema.properties) {
+        const requiredList = Array.isArray(schema.required)
+          ? schema.required
+          : Object.keys(schema.properties); // no `required` annotation → legacy: all required
         for (const [field, fieldSchema] of Object.entries(schema.properties)) {
           if (!(field in body)) {
-            mismatches.push(`missing required field: ${field}`);
-          } else {
-            // Recurse — shallow
-            const sub = verifySchema(body[field], fieldSchema);
-            if (!sub.ok) mismatches.push(`field ${field}: ${sub.mismatches.join('; ')}`);
+            if (requiredList.includes(field)) {
+              mismatches.push(`missing required field: ${field}`);
+            }
+            continue;
           }
+          // Recurse — shallow
+          const sub = verifySchema(body[field], fieldSchema);
+          if (!sub.ok) mismatches.push(`field ${field}: ${sub.mismatches.join('; ')}`);
         }
       }
     } else if (schema.type === 'array') {
       if (!Array.isArray(body)) {
         return { ok: false, mismatches: [`expected array, got ${typeof body}`] };
+      }
+      // Validate item shapes ONLY when the plan declares them
+      if (schema.items && Array.isArray(body)) {
+        for (let i = 0; i < Math.min(body.length, 20); i++) {
+          const sub = verifySchema(body[i], schema.items);
+          if (!sub.ok) mismatches.push(`item ${i}: ${sub.mismatches.join('; ')}`);
+        }
       }
     } else if (schema.type === 'string') {
       if (typeof body !== 'string') mismatches.push(`expected string, got ${typeof body}`);
@@ -129,12 +150,15 @@ export function verifySchema(body, schema) {
 }
 
 /**
- * Probe a single endpoint. Returns { endpoint, status, durationMs, finding? }.
+ * Probe a single endpoint.
+ * Returns { endpoint, status?, durationMs, body?, findings: [] } — plus a
+ * `finding` alias for the first finding (back-compat).
  */
 export async function probeEndpoint(endpoint, ctx) {
-  const fetchImpl = ctx.options?.fetch || globalThis.fetch;
+  const allowPrivate = ctx.options?.allowPrivateTargets || config.allowPrivateTargets;
+  const fetchImpl = ctx.options?.fetch || (allowPrivate ? globalThis.fetch : safeFetch);
   if (!fetchImpl) {
-    throw new Error('No fetch implementation available. Pass ctx.options.fetch or run in Node 18+.');
+    throw new Error('No fetch implementation available. Pass ctx.options.fetch or safeFetch.');
   }
   const timeoutMs = ctx.options?.timeout ?? DEFAULT_TIMEOUT_MS;
   const fetchWithTimeout = withTimeout(fetchImpl, timeoutMs, ctx.signal);
@@ -144,6 +168,31 @@ export async function probeEndpoint(endpoint, ctx) {
   })();
 
   const url = buildUrl(endpoint, fallbackOrigin);
+
+  // Same-origin enforcement — a plan (or a compromised inference) pointing
+  // probes at third-party origins is refused, not fetched.
+  try {
+    const urlOrigin = new URL(url).origin;
+    const targetOrigin = new URL(fallbackOrigin).origin;
+    if (urlOrigin !== targetOrigin) {
+      ctx.onEvent?.(`Refused cross-origin API probe: ${url} (target origin ${targetOrigin})`);
+      const finding = ctx.createFinding({
+        title: `API ${endpoint.method} ${endpoint.path} is cross-origin with the run target`,
+        severity: 'high',
+        confidence: 'confirmed',
+        category: 'security',
+        findingType: 'warning',
+        origin: 'first-party',
+        ruleId: 'api-cross-origin-blocked',
+        pageUrl: url,
+        description: `The composed endpoint URL (${urlOrigin}) is not same-origin with the run target (${targetOrigin}). The probe was skipped — contract tests must target the site under test.`,
+        evidence: `Endpoint: ${endpoint.method} ${endpoint.path}\nComposed URL: ${url}\nTarget origin: ${targetOrigin}`,
+        suggestedFix: 'Remove the endpoint\'s baseUrl override (or point it at the run target) so probes only hit the site under test.',
+      });
+      return { endpoint, status: null, durationMs: 0, body: null, findings: [finding], finding, skipped: true, skipReason: 'cross-origin' };
+    }
+  } catch { /* unparseable URL — fetch will fail below with a clearer error */ }
+
   const start = Date.now();
 
   const headers = { ...endpoint.headers };
@@ -152,11 +201,31 @@ export async function probeEndpoint(endpoint, ctx) {
   if (ctx.options?.sessionCookie && !headers['Cookie']) {
     headers['Cookie'] = ctx.options.sessionCookie;
   }
-  // Auth — in production, executor resolves secretRef from env. For now, pass through.
+  // Auth — secretRef is resolved from env. A missing secret means we probe
+  // UNAUTHENTICATED (and say so): a bogus placeholder credential would
+  // produce misleading findings. Only SQA_TD_* prefixed secrets are permitted.
+  const APPROVED_SECRET_REF = /^SQA_TD_[A-Z0-9_]+$/;
   if (endpoint.auth?.type === 'bearer' && endpoint.auth.secretRef) {
-    headers['Authorization'] = `Bearer ${process.env[endpoint.auth.secretRef] || 'TEST-TOKEN'}`;
+    if (!APPROVED_SECRET_REF.test(endpoint.auth.secretRef)) {
+      throw new Error(`Unapproved secretRef: "${endpoint.auth.secretRef}" — only SQA_TD_* prefixed secrets are allowed`);
+    }
+    const secret = process.env[endpoint.auth.secretRef];
+    if (secret) {
+      headers['Authorization'] = `Bearer ${secret}`;
+    } else {
+      ctx.onEvent?.(`secret ${endpoint.auth.secretRef} not set — probing unauthenticated`);
+    }
   } else if (endpoint.auth?.type === 'basic' && endpoint.auth.secretRef) {
-    headers['Authorization'] = `Basic ${process.env[endpoint.auth.secretRef] || 'TEST'}`;
+    if (!APPROVED_SECRET_REF.test(endpoint.auth.secretRef)) {
+      throw new Error(`Unapproved secretRef: "${endpoint.auth.secretRef}" — only SQA_TD_* prefixed secrets are allowed`);
+    }
+    const secret = process.env[endpoint.auth.secretRef];
+    if (secret) {
+      // The env value is expected to be the pre-encoded "user:pass" credential
+      headers['Authorization'] = `Basic ${secret}`;
+    } else {
+      ctx.onEvent?.(`secret ${endpoint.auth.secretRef} not set — probing unauthenticated`);
+    }
   }
 
   const init = {
@@ -261,6 +330,27 @@ export async function probeEndpoint(endpoint, ctx) {
           }),
         };
       }
+    }
+
+    // Latency budget — measured latency over the endpoint's declared budget
+    // is a low-severity, honest signal (not a hard failure).
+    if (endpoint.latencyBudgetMs != null && durationMs > endpoint.latencyBudgetMs) {
+      return {
+        endpoint, status, durationMs, body,
+        finding: ctx.createFinding({
+          title: `API ${endpoint.method} ${endpoint.path} exceeded its latency budget`,
+          severity: 'low',
+          confidence: 'confirmed',
+          category: 'performance',
+          findingType: 'warning',
+          origin: 'first-party',
+          ruleId: 'api-latency-budget',
+          pageUrl: url,
+          description: `Measured latency ${durationMs}ms exceeded the declared budget of ${endpoint.latencyBudgetMs}ms.`,
+          evidence: `Endpoint: ${endpoint.method} ${endpoint.path}\nURL: ${url}\nMeasured: ${durationMs}ms\nBudget: ${endpoint.latencyBudgetMs}ms\nOver by: ${durationMs - endpoint.latencyBudgetMs}ms`,
+          suggestedFix: 'Investigate server-side latency for this endpoint (caching, DB queries, cold starts) or raise the budget if the target is realistic.',
+        }),
+      };
     }
 
     return { endpoint, status, durationMs, body };

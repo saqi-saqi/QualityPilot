@@ -1,8 +1,12 @@
 /**
  * storage/flakyStore.js — SQLite persistence for flaky test tracking.
+ *
+ * Detection itself lives in ONE place: matrix/flakyTracker.js
+ * `detectFlakyFromRuns()`. This store only persists run summaries and
+ * delegates analysis to that shared algorithm.
  */
 import { getDatabase } from './db.js';
-import { buildRunSummary } from '../matrix/flakyTracker.js';
+import { buildRunSummary, detectFlakyFromRuns } from '../matrix/flakyTracker.js';
 
 export class SqliteFlakyStore {
   constructor({ db = getDatabase() } = {}) {
@@ -17,13 +21,14 @@ export class SqliteFlakyStore {
     const ruleIds = Array.from(summary.ruleIds || []);
 
     const stmt = this.db.prepare(`
-      INSERT INTO flaky_history (run_id, url, started_at, status, rule_ids_json)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO flaky_history (run_id, url, started_at, status, rule_ids_json, options_key)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id) DO UPDATE SET
         url = excluded.url,
         started_at = excluded.started_at,
         status = excluded.status,
-        rule_ids_json = excluded.rule_ids_json
+        rule_ids_json = excluded.rule_ids_json,
+        options_key = excluded.options_key
     `);
 
     stmt.run(
@@ -31,16 +36,18 @@ export class SqliteFlakyStore {
       summary.url,
       summary.startedAt || new Date().toISOString(),
       summary.status || 'completed',
-      JSON.stringify(ruleIds)
+      JSON.stringify(ruleIds),
+      summary.optionsKey || ''
     );
   }
 
   /**
    * Detect flaky tests across all stored runs in SQLite.
+   * Delegates to the shared detectFlakyFromRuns algorithm.
    */
   async detectFlakyTests() {
     const rows = this.db.prepare(`
-      SELECT run_id, url, started_at, status, rule_ids_json
+      SELECT run_id, url, started_at, status, rule_ids_json, options_key
       FROM flaky_history
       ORDER BY started_at ASC
     `).all();
@@ -56,55 +63,10 @@ export class SqliteFlakyStore {
         startedAt: r.started_at,
         status: r.status,
         ruleIds: Array.isArray(ruleIds) ? ruleIds : [],
+        optionsKey: r.options_key || '',
       };
     });
 
-    const completed = runs.filter(r => r.status === 'completed');
-    const byUrl = new Map();
-    for (const run of completed) {
-      if (!byUrl.has(run.url)) byUrl.set(run.url, []);
-      byUrl.get(run.url).push(run);
-    }
-
-    const flaky = [];
-    for (const [url, urlRuns] of byUrl) {
-      if (urlRuns.length < 2) continue;
-
-      const allRuleIds = new Set();
-      for (const r of urlRuns) {
-        for (const id of r.ruleIds) allRuleIds.add(id);
-      }
-
-      for (const ruleId of allRuleIds) {
-        let passCount = 0;
-        let failCount = 0;
-        let lastFailedAt = null;
-
-        for (const r of urlRuns) {
-          if (r.ruleIds.includes(ruleId)) {
-            failCount++;
-            if (!lastFailedAt || new Date(r.startedAt) > new Date(lastFailedAt)) {
-              lastFailedAt = r.startedAt;
-            }
-          } else {
-            passCount++;
-          }
-        }
-
-        if (passCount >= 1 && failCount >= 1) {
-          flaky.push({
-            ruleId,
-            url,
-            passCount,
-            failCount,
-            totalRuns: passCount + failCount,
-            flakinessRatio: failCount / (passCount + failCount),
-            lastFailedAt,
-          });
-        }
-      }
-    }
-
-    return flaky;
+    return detectFlakyFromRuns(runs);
   }
 }

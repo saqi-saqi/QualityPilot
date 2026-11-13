@@ -4,8 +4,9 @@
  * Uses GitHub's REST API to search for existing issues, create new ones,
  * and update them with comments when findings re-occur.
  *
- * Auth: GITHUB_TOKEN env var (Personal Access Token with `repo` scope)
- *       or per-adapter token passed via constructor.
+ * Auth: SQA_GITHUB_TOKEN env var (Personal Access Token with `repo` scope),
+ *       falling back to the legacy GITHUB_TOKEN, or a per-adapter token
+ *       passed via constructor.
  *
  * Required: GitHub repo in "owner/name" format.
  *
@@ -26,7 +27,7 @@ export class GitHubAdapter {
   /**
    * @param {object} options
    * @param {string} options.repo        — 'owner/name'
-   * @param {string} [options.token]     — defaults to process.env.GITHUB_TOKEN
+   * @param {string} [options.token]     — defaults to SQA_GITHUB_TOKEN (then legacy GITHUB_TOKEN)
    * @param {object} [options.fetch]     — defaults to global fetch
    */
   constructor({ repo, token, fetch: fetchImpl } = {}) {
@@ -34,7 +35,8 @@ export class GitHubAdapter {
       throw new Error('GitHubAdapter requires repo in "owner/name" format');
     }
     this.repo = repo;
-    this.token = token || process.env.GITHUB_TOKEN;
+    // README-documented name first, legacy name second (backward compat).
+    this.token = token || process.env.SQA_GITHUB_TOKEN || process.env.GITHUB_TOKEN;
     this.fetch = fetchImpl || globalThis.fetch;
     if (!this.fetch) {
       throw new Error('No fetch implementation available');
@@ -43,7 +45,7 @@ export class GitHubAdapter {
 
   async _api(method, path, body) {
     if (!this.token) {
-      throw new Error('GITHUB_TOKEN not set. Set it in env or pass to constructor.');
+      throw new Error('GITHUB_TOKEN not set. Set SQA_GITHUB_TOKEN (or legacy GITHUB_TOKEN) in env, or pass token to constructor.');
     }
     const url = path.startsWith('http') ? path : `${GITHUB_API}${path}`;
     const res = await this.fetch(url, {

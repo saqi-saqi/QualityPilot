@@ -448,3 +448,179 @@ describe('apiContract WAF-challenge classification', () => {
     assert.equal(f.findingType, 'bug');
   });
 });
+
+// ─── secret handling (no bogus credentials) ──────────────────────────
+
+describe('apiContract secret handling', () => {
+  function makeCtx() {
+    return {
+      plan: { targetUrl: 'https://api.example.com', apiEndpoints: [] },
+      createFinding: createFindingFactory(),
+      onEvent: (m) => events.push(m),
+      signal: undefined,
+      options: {},
+    };
+  }
+  let events;
+
+  beforeEach(() => { events = []; });
+
+  it('sends the bearer token when the secret IS set', async () => {
+    const ctx = makeCtx();
+    ctx.plan.apiEndpoints = [{ method: 'GET', path: '/x', auth: { type: 'bearer', secretRef: 'SQA_TD_MY_SECRET' } }];
+    let captured;
+    ctx.options.fetch = async (url, init) => { captured = init; return { status: 200, headers: new Headers(), async json() { return {}; }, async text() { return '{}'; } }; };
+    process.env.SQA_TD_MY_SECRET = 'real-token';
+    try {
+      const { probeEndpoint } = await import('../src/executors/apiContract.js');
+      const r = await probeEndpoint(ctx.plan.apiEndpoints[0], ctx);
+      assert.equal(captured.headers['Authorization'], 'Bearer real-token');
+      assert.equal(r.finding, undefined);
+    } finally {
+      delete process.env.SQA_TD_MY_SECRET;
+    }
+  });
+
+  it('rejects unapproved secretRef not starting with SQA_TD_', async () => {
+    const ctx = makeCtx();
+    ctx.plan.apiEndpoints = [{ method: 'GET', path: '/x', auth: { type: 'bearer', secretRef: 'SQA_API_TOKEN' } }];
+    const { probeEndpoint } = await import('../src/executors/apiContract.js');
+    await assert.rejects(
+      async () => probeEndpoint(ctx.plan.apiEndpoints[0], ctx),
+      /Unapproved secretRef/
+    );
+  });
+
+  it('SKIPS the auth header (no bogus credential) + warns when the secret is missing', async () => {
+    const ctx = makeCtx();
+    ctx.plan.apiEndpoints = [{ method: 'GET', path: '/x', auth: { type: 'bearer', secretRef: 'SQA_TD_MISSING_SECRET_XYZ' } }];
+    let captured;
+    ctx.options.fetch = async (url, init) => { captured = init; return { status: 200, headers: new Headers(), async json() { return {}; }, async text() { return '{}'; } }; };
+    delete process.env.SQA_TD_MISSING_SECRET_XYZ;
+    const { probeEndpoint } = await import('../src/executors/apiContract.js');
+    const r = await probeEndpoint(ctx.plan.apiEndpoints[0], ctx);
+    assert.equal(captured.headers['Authorization'], undefined);
+    assert.ok(events.some(e => /secret SQA_TD_MISSING_SECRET_XYZ not set — probing unauthenticated/.test(e)));
+    assert.equal(r.finding, undefined);
+  });
+
+  it('warns for basic auth too', async () => {
+    const ctx = makeCtx();
+    ctx.plan.apiEndpoints = [{ method: 'GET', path: '/x', auth: { type: 'basic', secretRef: 'SQA_TD_MISSING_BASIC_XYZ' } }];
+    let captured;
+    ctx.options.fetch = async (url, init) => { captured = init; return { status: 200, headers: new Headers(), async json() { return {}; }, async text() { return '{}'; } }; };
+    const { probeEndpoint } = await import('../src/executors/apiContract.js');
+    await probeEndpoint(ctx.plan.apiEndpoints[0], ctx);
+    assert.equal(captured.headers['Authorization'], undefined);
+    assert.ok(events.some(e => /probing unauthenticated/.test(e)));
+  });
+});
+
+// ─── same-origin enforcement ─────────────────────────────────────────
+
+describe('apiContract same-origin enforcement', () => {
+  it('blocks and reports a cross-origin endpoint without fetching', async () => {
+    const events = [];
+    let fetched = 0;
+    const ctx = {
+      plan: {
+        targetUrl: 'https://api.example.com',
+        apiEndpoints: [{
+          method: 'GET',
+          path: '/steal',
+          baseUrl: 'https://evil.example.org',   // cross-origin override
+        }],
+      },
+      createFinding: createFindingFactory(),
+      onEvent: (m) => events.push(m),
+      options: { fetch: async () => { fetched++; return { status: 200, headers: new Headers(), async text() { return '{}'; } }; } },
+    };
+    const result = await apiContract(ctx);
+    assert.equal(fetched, 0);
+    assert.equal(result.findings.length, 1);
+    const f = result.findings[0];
+    assert.equal(f.ruleId, 'api-cross-origin-blocked');
+    assert.equal(f.severity, 'high');
+    assert.equal(f.confidence, 'confirmed');
+    assert.equal(f.category, 'security');
+    assert.ok(events.some(e => /Refused cross-origin API probe/.test(e)));
+  });
+
+  it('allows same-origin baseUrl overrides', async () => {
+    const ctx = {
+      plan: { targetUrl: 'https://api.example.com', apiEndpoints: [] },
+      createFinding: createFindingFactory(),
+      onEvent: () => {},
+      options: {},
+    };
+    ctx.plan.apiEndpoints = [{ method: 'GET', path: '/x', baseUrl: 'https://api.example.com' }];
+    ctx.options.fetch = async () => ({ status: 200, headers: new Headers(), async json() { return {}; }, async text() { return '{}'; } });
+    const result = await apiContract(ctx);
+    assert.equal(result.findings.length, 0);
+  });
+});
+
+// ─── softened schema checking ────────────────────────────────────────
+
+describe('verifySchema required-softening', () => {
+  it('with a `required` list, only listed keys are mandatory', () => {
+    const schema = {
+      type: 'object',
+      properties: { id: { type: 'number' }, name: { type: 'string' }, nickname: { type: 'string' } },
+      required: ['id', 'name'],  // nickname observed once → optional
+    };
+    assert.equal(verifySchema({ id: 1, name: 'A' }, schema).ok, true);          // nickname missing → OK
+    assert.equal(verifySchema({ id: 1 }, schema).ok, false);                    // name required → missing
+    const r = verifySchema({ id: 1, name: 'A', nickname: 42 }, schema);
+    assert.equal(r.ok, false);                                                  // present but wrong type
+  });
+
+  it('without a `required` list, all properties stay required (legacy)', () => {
+    const schema = { type: 'object', properties: { id: { type: 'number' }, name: { type: 'string' } } };
+    assert.equal(verifySchema({ id: 1 }, schema).ok, false);
+  });
+
+  it('validates array items ONLY when the plan declares item shapes', () => {
+    const withItems = { type: 'array', items: { type: 'object', properties: { id: { type: 'number' } } } };
+    assert.equal(verifySchema([{ id: 1 }, { id: 2 }], withItems).ok, true);
+    assert.equal(verifySchema([{ nope: true }], withItems).ok, false);
+
+    const withoutItems = { type: 'array' };
+    assert.equal(verifySchema([{ anything: 'goes' }], withoutItems).ok, true);
+  });
+});
+
+describe('apiContract latency budget', () => {
+  it('emits a low-severity api-latency-budget finding when over budget', async () => {
+    const ctx = {
+      plan: { targetUrl: 'https://api.example.com', apiEndpoints: [] },
+      createFinding: createFindingFactory(),
+      onEvent: () => {},
+      options: {},
+    };
+    ctx.plan.apiEndpoints = [{ method: 'GET', path: '/slow', expectedStatus: 200, latencyBudgetMs: 1 }];
+    ctx.options.fetch = async () => {
+      await new Promise(r => setTimeout(r, 30));  // simulate latency
+      return { status: 200, headers: new Headers(), async json() { return {}; }, async text() { return '{}'; } };
+    };
+    const result = await apiContract(ctx);
+    assert.equal(result.findings.length, 1);
+    const f = result.findings[0];
+    assert.equal(f.ruleId, 'api-latency-budget');
+    assert.equal(f.severity, 'low');
+    assert.ok(/budget of 1ms/.test(f.description));
+  });
+
+  it('stays silent when within budget', async () => {
+    const ctx = {
+      plan: { targetUrl: 'https://api.example.com', apiEndpoints: [] },
+      createFinding: createFindingFactory(),
+      onEvent: () => {},
+      options: {},
+    };
+    ctx.plan.apiEndpoints = [{ method: 'GET', path: '/fast', expectedStatus: 200, latencyBudgetMs: 60000 }];
+    ctx.options.fetch = async () => ({ status: 200, headers: new Headers(), async json() { return {}; }, async text() { return '{}'; } });
+    const result = await apiContract(ctx);
+    assert.equal(result.findings.length, 0);
+  });
+});

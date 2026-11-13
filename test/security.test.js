@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import securityExecutor, { analyzeCookie, detectMixedContent } from '../src/executors/security.js';
+import securityExecutor, { analyzeCookie, analyzeCors, analyzeCsp, detectMixedContent } from '../src/executors/security.js';
 import { createFindingFactory } from '../src/services/findingFactory.js';
 
 // ─── mock fetch helper ───────────────────────────────────────────────
@@ -137,6 +137,22 @@ describe('detectMixedContent', () => {
   });
 });
 
+describe('security policy analysis', () => {
+  it('flags CSP values that allow unsafe script execution', () => {
+    const issues = analyzeCsp("default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'");
+    assert.ok(issues.some(issue => issue.ruleId === 'csp-unsafe-inline'));
+    assert.ok(issues.some(issue => issue.ruleId === 'csp-unsafe-eval'));
+  });
+
+  it('flags wildcard CORS paired with credentials', () => {
+    const issues = analyzeCors({
+      'access-control-allow-origin': '*',
+      'access-control-allow-credentials': 'true',
+    });
+    assert.equal(issues[0].ruleId, 'cors-wildcard-credentials');
+  });
+});
+
 // ─── executor end-to-end ────────────────────────────────────────────
 
 describe('security executor', () => {
@@ -193,6 +209,7 @@ describe('security executor', () => {
 
     const result = await securityExecutor(ctx);
     assert.ok(!result.findings.some(f => f.ruleId === 'header-strict-transport-security'));
+    assert.ok(result.findings.some(f => f.ruleId === 'transport-http'));
   });
 
   it('emits cookie findings when cookies lack attributes', async () => {

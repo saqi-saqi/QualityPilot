@@ -10,7 +10,9 @@
  * combination — each tagged with the executors that should run in it.
  *
  * Executor → cell mapping rules (sensible defaults; overridable via plan):
- *   • api-contract, security, fuzz : no browser needed → run once per role
+ *   • api-contract, security : no browser needed → run once per role
+ *   • fuzz                           : runs in a browser when form targets exist;
+ *                                      otherwise runs once per role without one
  *       (different roles see different API surfaces)
  *   • e2e                            : browser + role needed, viewport-independent
  *       (flows target user interactions, not layouts)
@@ -21,7 +23,7 @@
  * — every (browser, viewport, role) combination is exercised.
  */
 
-const NO_BROWSER_EXECUTORS = new Set(['api-contract', 'security', 'fuzz']);
+const NO_BROWSER_EXECUTORS = new Set(['api-contract', 'security']);
 const BROWSER_VIEWPORT_EXECUTORS = new Set(['accessibility-deep', 'perf', 'visual']);
 const BROWSER_ONLY_EXECUTORS = new Set(['e2e']);
 
@@ -48,6 +50,7 @@ export function planMatrix(plan, roles = null) {
   const browsers = plan.browsers?.length ? plan.browsers : ['chromium'];
   const viewports = plan.viewports?.length ? plan.viewports : [{ width: 1280, height: 720, name: 'desktop' }];
   const executors = plan.executors?.length ? plan.executors : [];
+  const hasFormFuzzTargets = (plan.fuzzTargets || []).some(target => target.pageUrl && target.fieldSelector);
 
   // Resolve roles: anon is always present; pull others from auth flows
   const finalRoles = roles || resolveDefaultRoles(plan);
@@ -55,7 +58,7 @@ export function planMatrix(plan, roles = null) {
   const cells = [];
 
   // 1. No-browser executors — run once per role, regardless of browser/viewport
-  const noBrowserExecs = executors.filter(e => NO_BROWSER_EXECUTORS.has(e));
+  const noBrowserExecs = executors.filter(e => NO_BROWSER_EXECUTORS.has(e) || (e === 'fuzz' && !hasFormFuzzTargets));
   if (noBrowserExecs.length > 0) {
     for (const role of finalRoles) {
       cells.push({
@@ -70,7 +73,7 @@ export function planMatrix(plan, roles = null) {
   }
 
   // 2. Browser-only executors — run once per (browser, role), viewport-independent
-  const browserOnlyExecs = executors.filter(e => BROWSER_ONLY_EXECUTORS.has(e));
+  const browserOnlyExecs = executors.filter(e => BROWSER_ONLY_EXECUTORS.has(e) || (e === 'fuzz' && hasFormFuzzTargets));
   if (browserOnlyExecs.length > 0) {
     for (const browser of browsers) {
       for (const role of finalRoles) {

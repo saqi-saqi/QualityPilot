@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { migrateJsonToSqlite } from '../scripts/migrate-json-to-sqlite.js';
-import { getDatabase, closeDatabase } from '../src/storage/db.js';
+import { getDatabase, closeDatabase, getSchemaVersion, MIGRATIONS } from '../src/storage/db.js';
 import { getRun } from '../src/storage/runStore.js';
 import { SqliteMonitorStore } from '../src/storage/monitorStore.js';
 
@@ -84,6 +84,11 @@ describe('JSON to SQLite Migration', () => {
     const monitor = await monitorStore.get('client-site');
     assert.ok(monitor);
     assert.equal(monitor.label, 'Client Site');
+    // A migrated monitor has no recorded roles → normalized to []
+    assert.deepEqual(monitor.roles, []);
+
+    // Schema migrations have been applied (user_version at latest)
+    assert.equal(getSchemaVersion(db), MIGRATIONS[MIGRATIONS.length - 1].version);
 
     closeDatabase(db);
 

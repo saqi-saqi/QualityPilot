@@ -155,6 +155,19 @@ describe('runMatrix', () => {
       ...baseCtx(),
     });
 
+    it('uses explicitly requested roles instead of inferred roles', async () => {
+      const result = await runMatrix({
+        plan: samplePlan,
+        browserPool: null,
+        ...baseCtx(),
+        options: { roles: ['admin'], dedup: false },
+      });
+
+      const apiFindings = result.findings.filter(f => f.ruleId === 'api-test');
+      assert.equal(apiFindings.length, 1);
+      assert.equal(apiFindings[0].matrixCell.role, 'admin');
+    });
+
     assert.ok(result.stats.cells.length > 0);
     for (const cellStat of result.stats.cells) {
       assert.ok(cellStat.cellId);
@@ -193,6 +206,8 @@ describe('runMatrix', () => {
         }
       }
     }
+    assert.ok(result.stats.failedCells > 0);
+    assert.ok(result.coverageFailures.some(f => f.ruleId === 'matrix-cell-failure'));
   });
 
   it('respects abort signal', async () => {
@@ -257,6 +272,38 @@ describe('runMatrix', () => {
     assert.equal(merged[0].ruleId, 'axe-region');
     assert.equal(merged[0].selector, '.css-8qpjjf');
     assert.deepEqual(merged[0].matrixCells.sort(), ['chromium:desktop:anon', 'chromium:mobile:anon'].sort());
+  });
+
+  it('no-selector findings dedup by title+evidence hash and seed affectedPages with their own pageUrl', () => {
+    const f1 = {
+      ruleId: 'e2e-flow-failed',
+      title: 'Checkout flow failed at step 2',
+      evidence: 'Timeout waiting for .cart',
+      pageUrl: 'https://example.com/checkout',
+      matrixCell: { cellId: 'chromium:desktop:anon' },
+    };
+    const f2 = {
+      ruleId: 'e2e-flow-failed',
+      title: 'Checkout flow failed at step 2',
+      evidence: 'Timeout waiting for .cart',
+      pageUrl: 'https://example.com/checkout',
+      matrixCell: { cellId: 'webkit:desktop:anon' },
+    };
+    // Different title on the same ruleId + page → distinct finding
+    const f3 = {
+      ruleId: 'e2e-flow-failed',
+      title: 'A completely different failure',
+      evidence: 'Timeout waiting for .cart',
+      pageUrl: 'https://example.com/checkout',
+      matrixCell: { cellId: 'chromium:mobile:anon' },
+    };
+
+    const merged = dedupFindings([f1, f2, f3]);
+    assert.equal(merged.length, 2, 'same title+evidence merge; different title stays separate');
+    const mergedFlow = merged.find(f => f.title === 'Checkout flow failed at step 2');
+    assert.equal(mergedFlow.occurrences, 2);
+    assert.deepEqual(mergedFlow.affectedPages, ['https://example.com/checkout']);
+    assert.deepEqual(mergedFlow.matrixCells.sort(), ['chromium:desktop:anon', 'webkit:desktop:anon'].sort());
   });
 
   it('Bug 2 regression: simulates one page.goto timeout, producing exactly one coverage-failure record excluded from findings/bugs counts', async () => {

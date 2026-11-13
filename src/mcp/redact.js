@@ -9,7 +9,7 @@
  *     prompts (origin + path + parameter NAMES, never values).
  *   • Free-text fields (evidence, description, error messages) are scrubbed
  *     against credential patterns: Bearer tokens, JWTs, cookie values,
- *     key=value secrets.
+ *     known token prefixes, key=value secrets.
  *
  * This mirrors the LLM boundary documented in ../explorer/prompts.js — one
  * concept, two enforcement points, both locked by tests.
@@ -29,11 +29,25 @@ const SECRET_PATTERNS = [
   { re: /\b(bearer|basic)\s+[A-Za-z0-9\-._~+/=]{8,}/gi, replacement: '$1 [REDACTED]' },
   // Cookie values: "cookie: a=b; session=xyz" → values stripped
   { re: /((?:set-)?cookie\s*[:=]\s*)[^\n\r"']+/gi, replacement: '$1[REDACTED]' },
-  // key=value / "key": "value" secrets
-  { re: /(["']?(?:api[-_]?key|access[-_]?token|auth[-_]?token|secret|password|passwd|session[_-]?id|sessionid|x-api-key|authorization)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&"']+)/gi,
+  // key=value / "key": "value" secrets — incl. bare session/sid/phpsessid/csrf names
+  { re: /(["']?\b(?:phpsessid|session[_-]?id|sessionid|session|sid|csrf[_-]?token|csrf|xsrf|api[-_]?key|access[-_]?token|auth[-_]?token|secret|password|passwd|x-api-key|authorization)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&"']+)/gi,
     replacement: '$1[REDACTED]' },
-  // Long hex/base64ish secrets (32+ chars) — likely tokens, never prose
+  // GitHub tokens: classic ghp_/gho_/ghu_/ghs_/ghr_ and fine-grained github_pat_
+  { re: /\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+  // Slack tokens (xoxb/xoxa/xoxp and sibling families)
+  { re: /\bxox[baprs]-[A-Za-z0-9-]{10,}/g, replacement: '[REDACTED_SLACK_TOKEN]' },
+  // AWS access key ids
+  { re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, replacement: '[REDACTED_AWS_KEY]' },
+  // OpenAI-style API keys (sk-…, incl. sk-proj-)
+  { re: /\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{16,}/g, replacement: '[REDACTED_API_KEY]' },
+  // Generic key=value secrets (bare key/token/secret/password names)
+  { re: /(["']?\b(?:key|token|secret|password)\b["']?\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&"']+)/gi,
+    replacement: '$1[REDACTED]' },
+  // Long hex/base64ish secrets (40+ chars) — likely tokens, never prose
   { re: /\b[A-Za-z0-9+/_-]{40,}={0,2}\b/g, replacement: '[REDACTED_TOKEN]' },
+  // Shorter token-like strings (24+ chars of [A-Za-z0-9_-]) — opaque ids,
+  // refresh tokens, PATs; prose almost never contains runs like this.
+  { re: /\b[A-Za-z0-9_-]{24,}\b/g, replacement: '[REDACTED_TOKEN]' },
 ];
 
 /** Scrub credential material from a free-text string. */
@@ -44,6 +58,19 @@ export function scrubText(text) {
     out = out.replace(re, replacement);
   }
   return out;
+}
+
+/** Scrub credential material from any JSON-ish value (recursive). */
+function scrubDeep(value) {
+  if (value == null) return value;
+  if (typeof value === 'string') return scrubText(value);
+  if (Array.isArray(value)) return value.map(scrubDeep);
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = scrubDeep(v);
+    return out;
+  }
+  return value; // numbers, booleans — nothing to scrub
 }
 
 /** Scrub an error into an agent-safe message. NEVER returns stack traces. */
@@ -92,7 +119,7 @@ export function redactFinding(finding, verbosity = 'summary') {
     evidence: finding.evidence ? scrubText(finding.evidence) : null,
     occurrences: finding.occurrences ?? 1,
     affectedPages: (finding.affectedPages || []).map(sanitizeUrl),
-    affectedElements: finding.affectedElements ?? null,
+    affectedElements: scrubDeep(finding.affectedElements ?? null),
     reproSteps: (finding.reproSteps || []).map(scrubText),
     metrics: finding.metrics ? scrubMetrics(finding.metrics) : null,
   };
@@ -115,11 +142,10 @@ function isUnauthenticatedProbeLocal(finding) {
   try { return isUnauthenticatedProbe(finding) === true; } catch { return false; }
 }
 
-/** Metrics are numeric or unmeasured markers — scrub any embedded strings. */
+/**
+ * Metrics may be numeric, stringy or nested (per-executor breakdowns) —
+ * scrub any embedded strings at any depth.
+ */
 function scrubMetrics(metrics) {
-  const out = {};
-  for (const [k, v] of Object.entries(metrics)) {
-    out[k] = typeof v === 'string' ? scrubText(v) : v;
-  }
-  return out;
+  return scrubDeep(metrics);
 }

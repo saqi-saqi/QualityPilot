@@ -49,7 +49,15 @@ export async function runAxeOnPage(page, rules = []) {
       // Filter against the loaded axe version — plan rule IDs may drift
       // across axe releases, and an unknown ID makes axe.run() throw.
       const known = new Set(axe.getRules().map(r => r.ruleId));
-      const valid = ruleList.filter(r => known.has(r));
+      let valid = ruleList.filter(r => known.has(r));
+      if (!valid.length) {
+        // The plan's rule IDs don't exist in this axe build (version drift).
+        // Fetch the live WCAG-tagged rule set from the page's axe instead of
+        // scanning nothing.
+        try {
+          valid = axe.getRules(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).map(r => r.ruleId);
+        } catch {}
+      }
       if (valid.length) {
         opts = { runOnly: { type: 'rule', values: valid } };
       }

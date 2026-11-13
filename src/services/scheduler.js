@@ -8,11 +8,35 @@
  *   • For monitors with a finished lastRunId, refresh lastScore/lastStatus
  *     so the dashboard's monitor list stays current.
  *
+ * Race safety: lastRunAt + lastStatus='queued' are stamped BEFORE the run is
+ * created, so a trigger that crashes or a concurrent tick can never double-
+ * fire the same monitor. On failure the stamp is rolled back so the monitor
+ * stays due and retries on the next tick. Monitors whose lastStatus is
+ * 'queued'/'running' are skipped while recent — but a monitor left in that
+ * state by a server crash fires again after the grace window (missed-while-
+ * down runs still fire on restart).
+ *
  * No cron/external process needed — lives inside the dashboard server.
  * Concurrency is already handled by runManager's queue (MAX_CONCURRENT_RUNS).
  */
 import { config } from '../utils/config.js';
 import { MonitorStore } from './monitors.js';
+
+/** How long a 'queued'/'running' stamp blocks re-triggering. Covers a full
+ *  run timeout (default 5 min) plus crawl/queue headroom. */
+const ACTIVE_GRACE_MS = 60 * 60 * 1000;
+
+/** Max jitter between triggers (ms) — spreads load when many monitors fire at once. */
+const TRIGGER_JITTER_MS = 2000;
+
+/** True when the monitor was triggered recently and may still be executing. */
+function isRecentlyActive(monitor, now = Date.now()) {
+  if (monitor.lastStatus !== 'queued' && monitor.lastStatus !== 'running') return false;
+  const last = Date.parse(monitor.lastRunAt || '');
+  return Number.isFinite(last) && (now - last) < ACTIVE_GRACE_MS;
+}
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 export class Scheduler {
   /**
@@ -35,17 +59,20 @@ export class Scheduler {
     this.intervalMs = intervalMs || config.schedulerIntervalMs || 60000;
     this.timer = null;
     this._ticking = false;
+    this._stopped = false;
   }
 
   start() {
-    if (this.timer) return;
+    if (this.timer || this._stopped) return;
     this.timer = setInterval(() => this.tick().catch(err => this.log(`Scheduler tick failed: ${err.message}`)), this.intervalMs);
     // Don't keep the process alive just for the scheduler
     if (this.timer.unref) this.timer.unref();
     this.log(`Scheduler started — checking monitors every ${Math.round(this.intervalMs / 1000)}s`);
   }
 
+  /** Stop the loop. Idempotent + signal-safe (never throws, safe to re-call). */
   stop() {
+    this._stopped = true;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -58,13 +85,22 @@ export class Scheduler {
    * Exposed for tests — normally invoked by the interval.
    */
   async tick(now = Date.now()) {
-    if (this._ticking) return { triggered: [], refreshed: [] };
+    if (this._ticking || this._stopped) return { triggered: [], refreshed: [] };
     this._ticking = true;
     try {
       await this._refreshRunStates();
-      const due = await this.monitorStore.dueMonitors(now);
+      const due = (await this.monitorStore.dueMonitors(now))
+        // Skip monitors already queued/running (stamped by a previous tick or
+        // a manual run-now) — but only while that stamp is recent, so a
+        // monitor left mid-flight by a server crash recovers after the grace
+        // window (missed-while-down runs still fire on restart).
+        .filter(monitor => !isRecentlyActive(monitor, now));
+
       const triggered = [];
       for (const monitor of due) {
+        // Small jitter between triggers so a batch of due monitors doesn't
+        // stampede the queue (and the target site) in the same instant.
+        if (triggered.length > 0) await sleep(Math.floor(Math.random() * TRIGGER_JITTER_MS));
         const runId = await this._trigger(monitor).catch(err => {
           this.log(`Failed to trigger monitor ${monitor.id}: ${err.message}`);
           return null;
@@ -115,28 +151,48 @@ export class Scheduler {
  * Trigger a run for a monitor and stamp its state. Shared by the scheduler
  * tick and the "run now" API endpoint so both behave identically.
  *
+ * Crash-safety: lastRunAt + lastStatus='queued' are stamped BEFORE createRun
+ * — a failure rolls the stamp back so the monitor stays due for the next
+ * tick instead of being silently lost for a full interval.
+ *
  * @returns {Promise<string>} runId
  */
 export async function triggerMonitor(monitor, { monitorStore, createRun, log = () => {} }) {
-  const runId = await createRun({
-    url: monitor.url,
-    options: {
-      ...monitor.options,
-      monitorId: monitor.id,
-      // The previous run (if any) is the regression baseline
-      previousRunId: monitor.lastRunId || undefined,
-      onlyNewFindings: monitor.onlyNewFindings !== false,
-      ...(monitor.webhookUrl ? { webhookUrl: monitor.webhookUrl } : {}),
-    },
-  });
-  log(`Monitor ${monitor.id} triggered → ${runId}`);
+  const stampedAt = new Date().toISOString();
+
+  // Stamp FIRST — if we crash mid-trigger the monitor won't re-fire next tick.
   await monitorStore.update(monitor.id, {
-    lastRunAt: new Date().toISOString(),
-    lastRunId: runId,
+    lastRunAt: stampedAt,
     lastStatus: 'queued',
     lastScore: null,
   });
-  return runId;
+
+  try {
+    const runId = await createRun({
+      url: monitor.url,
+      options: {
+        ...monitor.options,
+        monitorId: monitor.id,
+        // The previous run (if any) is the regression baseline
+        previousRunId: monitor.lastRunId || undefined,
+        onlyNewFindings: monitor.onlyNewFindings !== false,
+        ...(monitor.webhookUrl ? { webhookUrl: monitor.webhookUrl } : {}),
+      },
+    });
+    log(`Monitor ${monitor.id} triggered → ${runId}`);
+    await monitorStore.update(monitor.id, {
+      lastRunId: runId,
+    });
+    return runId;
+  } catch (err) {
+    // Roll the pre-trigger stamp back so the monitor remains due.
+    await monitorStore.update(monitor.id, {
+      lastRunAt: monitor.lastRunAt || null,
+      lastStatus: monitor.lastStatus || null,
+      lastScore: monitor.lastScore ?? null,
+    }).catch(() => { /* keep the queued stamp over losing the error */ });
+    throw err;
+  }
 }
 
 /** Convenience factory used by the dashboard server. */

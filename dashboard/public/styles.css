@@ -1012,3 +1012,160 @@ details.finding-group[open] .group-chevron { transform: rotate(180deg); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ─── plan review (human-in-the-loop) + test plan view ─────────────── */
+
+.plan-review details,
+.plan-view details {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.8rem;
+  margin-top: 0.6rem;
+  background: var(--bg);
+}
+
+.plan-review summary,
+.plan-view summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.plan-items { display: flex; flex-direction: column; gap: 0.15rem; margin-top: 0.5rem; }
+
+.plan-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.35rem 0.2rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.875rem;
+}
+.plan-item:last-child { border-bottom: 0; }
+.plan-item input[type="checkbox"] { accent-color: var(--primary); flex-shrink: 0; }
+.plan-item code { font-family: var(--mono); font-size: 0.8rem; }
+
+.plan-extras { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.6rem; }
+
+.plan-actions { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.8rem; flex-wrap: wrap; }
+
+.method-chip {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 0.12rem 0.45rem;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.plan-view { margin-bottom: 1.25rem; }
+.plan-view > summary { list-style: none; }
+.plan-view > summary::-webkit-details-marker { display: none; }
+
+/* ─── finding triage ───────────────────────────────────────────────── */
+
+.triage-row { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.65rem; align-items: center; }
+
+.triage-btn {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.22rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.triage-btn:hover { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); color: var(--text); }
+
+.triage-btn.triage-open.active { background: color-mix(in srgb, var(--info) 16%, transparent); border-color: var(--info); color: var(--info); }
+.triage-btn.triage-acknowledged.active { background: color-mix(in srgb, var(--medium) 16%, transparent); border-color: var(--medium); color: var(--medium); }
+.triage-btn.triage-false_positive.active { background: color-mix(in srgb, var(--muted) 18%, transparent); border-color: var(--muted); color: var(--muted); }
+.triage-btn.triage-fixed.active { background: color-mix(in srgb, var(--success) 16%, transparent); border-color: var(--success); color: var(--success); }
+
+/* ─── run-to-run diff ──────────────────────────────────────────────── */
+
+.run-diff { margin-bottom: 1.25rem; }
+
+.diff-section { margin-top: 0.7rem; }
+.diff-section h3 { margin: 0 0 0.3rem; font-size: 0.92rem; }
+
+.diff-item {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.35rem 0.2rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.875rem;
+}
+.diff-item:last-child { border-bottom: 0; }
+
+.diff-url {
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 44ch;
+  white-space: nowrap;
+}
+
+.diff-delta {
+  font-weight: 700;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+.diff-delta.up { background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); }
+.diff-delta.down { background: color-mix(in srgb, var(--critical) 16%, transparent); color: var(--critical); }
+
+.diff-new { border-left: 3px solid var(--critical); padding-left: 0.7rem; }
+.diff-resolved { border-left: 3px solid var(--success); padding-left: 0.7rem; }
+.diff-persistent { border-left: 3px solid var(--info); padding-left: 0.7rem; }
+
+/* ─── monitor roles + per-role sessions ────────────────────────────── */
+
+.role-chip {
+  font-size: 0.7rem;
+  padding: 0.14rem 0.5rem;
+  background: color-mix(in srgb, var(--primary-2) 14%, transparent);
+  color: var(--primary-2);
+}
+
+.session-role-delete {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  padding: 0 0.1rem;
+  line-height: 1;
+}
+.session-role-delete:hover { color: var(--critical); }
+
+.monitor-edit-form {
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  margin-top: 0.6rem;
+  padding: 0.7rem;
+  border: 1px dashed color-mix(in srgb, var(--primary) 40%, var(--border));
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+.monitor-edit-form input {
+  padding: 0.42rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 0.85rem;
+}
+.monitor-edit-form .edit-label { flex: 1 1 180px; }
+.monitor-edit-form .edit-url { flex: 2 1 240px; }
+.monitor-edit-form .edit-roles { flex: 1 1 200px; }
+.monitor-edit-form .form-opt input { width: 4.3rem; }

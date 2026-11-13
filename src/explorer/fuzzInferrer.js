@@ -4,8 +4,8 @@
  * Heuristic, no LLM needed. The "full matrix" coverage bar means we err
  * on the side of proposing more targets — the human approver can prune.
  *
- * For form inputs we use selectors derived from the crawled page's imageDetails
- * (which already include id / data-testid / nth-of-type fallbacks).
+ * For form inputs we use the crawler's privacy-safe input metadata (selector,
+ * type, and form selector; never values).
  * For API endpoints we propose fuzzing each top-level field of the
  * observed request body.
  */
@@ -40,8 +40,8 @@ function generatorsForInput(input) {
  * from the live Playwright page if available, OR rely on the page having
  * an `inputDetails[]` field (Phase 1.5 enhancement).
  *
- * For Phase 1, we generate per-page fuzz targets using a generic selector
- * ('input, textarea, select') so the executor can walk them at runtime.
+ * Older crawl records may not contain inputDetails. In that case we use a
+ * conservative text-input selector rather than interacting with every control.
  */
 export function inferFuzzTargetsFromPages(pages) {
   const targets = [];
@@ -50,19 +50,31 @@ export function inferFuzzTargetsFromPages(pages) {
     // Skip pages with no inputs
     if (!page.inputs || page.inputs === 0) continue;
 
-    // Phase 1 generic target: "fuzz all inputs on this page"
-    // Phase 1.5 will split this into per-input targets once crawler exposes inputDetails.
-    const target = {
-      pageUrl: page.url,
-      formSelector: 'form',  // matches first form on page; executor can iterate
-      fieldSelector: 'input, textarea, select',
-      generators: DEFAULT_GENERATORS,
-      iterations: 20,        // per generator, so ~100 inputs per page max
-      expectStatus: 'no-5xx',
-    };
+    const eligibleInputs = (page.inputDetails || []).filter(input =>
+      !['hidden', 'submit', 'button', 'reset', 'checkbox', 'radio', 'file'].includes(input.type)
+    );
+    const targetsForPage = eligibleInputs.length > 0
+      ? eligibleInputs.map(input => ({
+          pageUrl: page.url,
+          formSelector: input.formSelector || 'form',
+          fieldSelector: input.selector,
+          generators: generatorsForInput(input),
+          iterations: 12,
+          expectStatus: 'no-5xx',
+        }))
+      : [{
+          pageUrl: page.url,
+          formSelector: 'form',
+          fieldSelector: 'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="password"]), textarea',
+          generators: DEFAULT_GENERATORS,
+          iterations: 12,
+          expectStatus: 'no-5xx',
+        }];
 
-    const parsed = FuzzTargetSchema.safeParse(target);
-    if (parsed.success) targets.push(parsed.data);
+    for (const target of targetsForPage) {
+      const parsed = FuzzTargetSchema.safeParse(target);
+      if (parsed.success) targets.push(parsed.data);
+    }
   }
 
   return targets;

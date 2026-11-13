@@ -2,60 +2,93 @@
  * matrix/flakyTracker.js — detect flaky tests across run history.
  *
  * A "flaky test" is one that:
- *   • Passes on some runs of the same target URL
+ *   • Passes on some runs of the same target URL + scan configuration
  *   • Fails on others
- *   • Has no consistent pattern (i.e. not a regression — just non-deterministic)
+ *   • Alternates pass/fail often enough to rule out a one-off fluke
  *
- * Strategy:
- *   1. Group runs by target URL
- *   2. For each ruleId observed in any run of that URL, count:
- *      - passCount: runs where the ruleId did NOT appear in findings
- *      - failCount: runs where the ruleId DID appear in findings
- *   3. If passCount >= 1 AND failCount >= 1 → flaky
- *   4. Compute a flakiness ratio = failCount / (passCount + failCount)
+ * Detection algorithm (single source of truth: `detectFlakyFromRuns`):
+ *   1. Group runs by target URL **and** a normalized options hash
+ *      (mode, maxPages, depth, executor set) — runs made with different
+ *      configurations must never be compared against each other.
+ *   2. For each ruleId observed in any run of that group, build the ordered
+ *      pass/fail outcome sequence (fail = rule appeared in findings).
+ *   3. Count alternations — the number of times the outcome flips between
+ *      consecutive runs. Require >= 3 alternations before labeling flaky
+ *      (e.g. fail→pass→fail→pass). A rule that flips once or twice may just
+ *      be a fix that landed mid-window, not non-determinism.
+ *   4. Compute a flakiness ratio = failCount / (passCount + failCount).
  *
- * The tracker persists findings summaries per run to a JSON file so it
- * doesn't need to re-read every historical run JSON. Phase 6 ships the
- * interface + a file-based implementation. Phase 6.5 could add SQLite
- * for faster queries on large histories.
+ * The tracker persists findings summaries per run (SQLite by default, JSON
+ * file as fallback) so analysis doesn't need to re-read every historical run.
  */
 import fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { SqliteFlakyStore } from '../storage/flakyStore.js';
+import { config } from '../utils/config.js';
 
 const DEFAULT_HISTORY_FILE = 'flaky-history.json';
 
+/** Minimum number of pass/fail flips before a rule is labeled flaky. */
+export const MIN_FLAKY_ALTERNATIONS = 3;
+
+/**
+ * Normalize the run options that affect scan determinism into a stable key.
+ * Runs with different (mode, maxPages, depth, executor set) are grouped
+ * separately — a rule missing because the run scanned fewer pages is a
+ * coverage difference, not flakiness.
+ */
+export function normalizeFlakyOptions(run) {
+  const options = run?.options || {};
+  const mode = run?.mode || options.mode || 'matrix';
+  const maxPages = options.maxPages ?? 'default';
+  const depth = options.maxDepth ?? 'default';
+  const executors = Array.isArray(options.executors)
+    ? [...new Set(options.executors.filter(Boolean))].sort().join(',')
+    : '';
+  return `mode=${mode}|maxPages=${maxPages}|depth=${depth}|executors=${executors}`;
+}
+
 /**
  * Build a per-run summary to persist for flaky tracking.
- * Just the fields we need: url, runId, startedAt, finding ruleIds.
+ * Just the fields we need: url, runId, startedAt, finding ruleIds, options key.
+ * Accepts either full runs (findings[]) or already-summarized records
+ * (ruleIds[] — e.g. rows coming through the JSON→SQLite migration).
  */
 export function buildRunSummary(run) {
+  const ruleIds = new Set([
+    ...(run.findings || []).map(f => f.ruleId).filter(Boolean),
+    ...(Array.isArray(run.ruleIds) ? run.ruleIds : []),
+  ]);
   return {
     runId: run.runId,
     url: run.url,
     startedAt: run.startedAt,
     status: run.status,
-    ruleIds: new Set((run.findings || []).map(f => f.ruleId).filter(Boolean)),
+    ruleIds,
+    optionsKey: run.optionsKey || normalizeFlakyOptions(run),
   };
 }
 
 /**
  * FlakyTracker — persists + analyzes run history.
  *
- * Storage format (JSON):
+ * Storage format (JSON fallback):
  *   {
- *     runs: Array<{ runId, url, startedAt, status, ruleIds: string[] }>,
+ *     runs: Array<{ runId, url, startedAt, status, ruleIds: string[], optionsKey: string }>,
  *     updatedAt: ISO timestamp,
  *   }
  */
 export class FlakyTracker {
-  constructor({ dataDir = './data', historyFile = DEFAULT_HISTORY_FILE, useSqlite, db } = {}) {
-    this.dataDir = dataDir;
-    this.historyFile = path.join(dataDir, historyFile);
+  constructor({ dataDir, historyFile = DEFAULT_HISTORY_FILE, useSqlite, db } = {}) {
+    // Honor config.dataDir (env SQA_DATA_DIR); the SQLite-vs-JSON heuristic
+    // compares resolved paths so a custom SQA_DATA_DIR still gets SQLite.
+    const resolvedDataDir = path.resolve(dataDir || config?.dataDir || path.join(process.cwd(), 'data'));
+    this.dataDir = resolvedDataDir;
+    this.historyFile = path.join(resolvedDataDir, historyFile);
     this._cache = null;
-    const defaultDataDir = path.join(process.cwd(), 'data');
-    this.useSqlite = useSqlite ?? (dataDir === './data' || dataDir === defaultDataDir);
+    const defaultDataDir = path.resolve(config?.dataDir || path.join(process.cwd(), 'data'));
+    this.useSqlite = useSqlite ?? (resolvedDataDir === defaultDataDir || resolvedDataDir === path.resolve('./data'));
     if (this.useSqlite) {
       try {
         this._sqliteStore = new SqliteFlakyStore({ db });
@@ -104,6 +137,7 @@ export class FlakyTracker {
       startedAt: summary.startedAt,
       status: summary.status,
       ruleIds: Array.from(summary.ruleIds),
+      optionsKey: summary.optionsKey,
     };
 
     // Replace if runId already exists
@@ -122,74 +156,14 @@ export class FlakyTracker {
 
   /**
    * Compute flaky tests across all recorded runs.
-   * Returns array of:
-   *   { ruleId, url, passCount, failCount, flakinessRatio, lastFailedAt }
+   * Delegates to the shared algorithm in detectFlakyFromRuns().
    */
   async detectFlakyTests() {
     if (this.useSqlite && this._sqliteStore) {
       return this._sqliteStore.detectFlakyTests();
     }
     const data = await this._load();
-
-    // Group runs by URL
-    const byUrl = new Map();
-    for (const run of data.runs) {
-      if (run.status !== 'completed') continue;  // skip failed runs
-      if (!byUrl.has(run.url)) byUrl.set(run.url, []);
-      byUrl.get(run.url).push(run);
-    }
-
-    const flaky = [];
-
-    for (const [url, runs] of byUrl) {
-      if (runs.length < 2) continue;  // need ≥2 runs to detect flakiness
-
-      // For each ruleId observed in this URL's history, count pass/fail
-      const allRuleIds = new Set();
-      for (const r of runs) {
-        for (const id of r.ruleIds) allRuleIds.add(id);
-      }
-
-      for (const ruleId of allRuleIds) {
-        let passCount = 0;
-        let failCount = 0;
-        let lastFailedAt = null;
-
-        for (const r of runs) {
-          if (r.ruleIds.includes(ruleId)) {
-            failCount++;
-            if (!lastFailedAt || new Date(r.startedAt) > new Date(lastFailedAt)) {
-              lastFailedAt = r.startedAt;
-            }
-          } else {
-            passCount++;
-          }
-        }
-
-        // Flaky: passed at least once AND failed at least once
-        if (passCount >= 1 && failCount >= 1) {
-          flaky.push({
-            ruleId,
-            url,
-            passCount,
-            failCount,
-            totalRuns: passCount + failCount,
-            flakinessRatio: failCount / (passCount + failCount),
-            lastFailedAt,
-          });
-        }
-      }
-    }
-
-    // Sort by flakiness ratio desc, then by failCount desc
-    flaky.sort((a, b) => {
-      if (b.flakinessRatio !== a.flakinessRatio) {
-        return b.flakinessRatio - a.flakinessRatio;
-      }
-      return b.failCount - a.failCount;
-    });
-
-    return flaky;
+    return detectFlakyFromRuns(data.runs);
   }
 
   /**
@@ -216,43 +190,59 @@ export class FlakyTracker {
     return {
       totalRuns: data.runs.length,
       uniqueUrls: new Set(data.runs.map(r => r.url)).size,
-      uniqueRuleIds: new Set(data.runs.flatMap(r => r.ruleIds)).size,
+      uniqueRuleIds: new Set(data.runs.flatMap(r => r.ruleIds || [])).size,
       updatedAt: data.updatedAt,
     };
   }
 }
 
 /**
- * Detect flaky tests from a list of runs (pure function — no file I/O).
+ * Detect flaky tests from a list of runs — THE single flakiness algorithm.
+ *
+ * Accepts run records in either shape:
+ *   • full runs with a `findings` array (ruleId extracted per finding)
+ *   • persisted summaries with a `ruleIds` array
+ * Both may carry `optionsKey` (or full `options`, which get normalized here).
+ *
  * Useful for the dashboard's trends view + unit testing.
  */
 export function detectFlakyFromRuns(runs) {
-  const completed = runs.filter(r => r.status === 'completed');
+  const completed = (runs || []).filter(r => r.status === 'completed');
 
-  // Group by URL
-  const byUrl = new Map();
+  // Group by URL + normalized options — the comparison key
+  const byGroup = new Map();
   for (const run of completed) {
-    if (!byUrl.has(run.url)) byUrl.set(run.url, []);
-    byUrl.get(run.url).push(run);
+    const optionsKey = run.optionsKey || normalizeFlakyOptions(run);
+    const key = `${run.url}::${optionsKey}`;
+    if (!byGroup.has(key)) byGroup.set(key, { url: run.url, optionsKey, runs: [] });
+    byGroup.get(key).runs.push(run);
+  }
+
+  // Sort each group chronologically before analyzing outcome sequences
+  for (const group of byGroup.values()) {
+    group.runs.sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt));
   }
 
   const flaky = [];
 
-  for (const [url, urlRuns] of byUrl) {
-    if (urlRuns.length < 2) continue;
+  for (const { url, optionsKey, runs: groupRuns } of byGroup.values()) {
+    if (groupRuns.length < 2) continue;  // need ≥2 runs to detect anything
 
     const allRuleIds = new Set();
-    for (const r of urlRuns) {
-      for (const f of r.findings || []) {
-        if (f.ruleId) allRuleIds.add(f.ruleId);
-      }
+    for (const r of groupRuns) {
+      for (const id of ruleIdsOf(r)) allRuleIds.add(id);
     }
 
     for (const ruleId of allRuleIds) {
-      let passCount = 0, failCount = 0, lastFailedAt = null;
-      for (const r of urlRuns) {
-        const hasFinding = (r.findings || []).some(f => f.ruleId === ruleId);
-        if (hasFinding) {
+      let passCount = 0;
+      let failCount = 0;
+      let alternations = 0;
+      let lastFailedAt = null;
+      let previousFailed = null;
+
+      for (const r of groupRuns) {
+        const failed = ruleIdsOf(r).includes(ruleId);
+        if (failed) {
           failCount++;
           if (!lastFailedAt || new Date(r.startedAt) > new Date(lastFailedAt)) {
             lastFailedAt = r.startedAt;
@@ -260,11 +250,25 @@ export function detectFlakyFromRuns(runs) {
         } else {
           passCount++;
         }
+        // Count outcome flips between consecutive runs
+        if (previousFailed !== null && failed !== previousFailed) {
+          alternations++;
+        }
+        previousFailed = failed;
       }
-      if (passCount >= 1 && failCount >= 1) {
+
+      // Flaky: the outcome must flip back and forth at least 3 times
+      // (e.g. fail→pass→fail→pass). One or two flips can be explained by a
+      // fix/regression landing mid-window — that's a trend, not flakiness.
+      if (alternations >= MIN_FLAKY_ALTERNATIONS) {
         flaky.push({
-          ruleId, url, passCount, failCount,
+          ruleId,
+          url,
+          optionsKey,
+          passCount,
+          failCount,
           totalRuns: passCount + failCount,
+          alternations,
           flakinessRatio: failCount / (passCount + failCount),
           lastFailedAt,
         });
@@ -272,6 +276,22 @@ export function detectFlakyFromRuns(runs) {
     }
   }
 
-  flaky.sort((a, b) => b.flakinessRatio - a.flakinessRatio);
+  // Sort by flakiness ratio desc, then by failCount desc
+  flaky.sort((a, b) => {
+    if (b.flakinessRatio !== a.flakinessRatio) {
+      return b.flakinessRatio - a.flakinessRatio;
+    }
+    return b.failCount - a.failCount;
+  });
+
   return flaky;
+}
+
+/** Extract the ruleId list from either run shape (findings[] or ruleIds[]). */
+function ruleIdsOf(run) {
+  if (Array.isArray(run.ruleIds)) return run.ruleIds;
+  if (Array.isArray(run.findings)) {
+    return run.findings.map(f => f.ruleId).filter(Boolean);
+  }
+  return [];
 }

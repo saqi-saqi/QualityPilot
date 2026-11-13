@@ -27,10 +27,26 @@ function authHeaders() {
   return token ? { 'Authorization': `Bearer ${token}` } : {};
 }
 
-function withAuth(url) {
+async function getAuthTicket() {
   const token = localStorage.getItem('sqa_token');
-  if (!token) return url;
-  return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
+  if (!token) return null;
+  try {
+    const res = await fetch('/api/ticket', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return data.ticket;
+    }
+  } catch {}
+  return null;
+}
+
+async function withAuth(url) {
+  const ticket = await getAuthTicket();
+  if (!ticket) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'ticket=' + encodeURIComponent(ticket);
 }
 
 function handleAuth(res) {
@@ -72,7 +88,7 @@ function showAuthPrompt() {
 
 const API = {
   runs: () => fetch('/api/runs', { headers: authHeaders() }).then(handleAuth).then(r => r.json()),
-  run: (id) => fetch(withAuth(`/api/runs/${encodeURIComponent(id)}`), { headers: authHeaders() }).then(handleAuth).then(r => r.json()),
+  run: async (id) => fetch(await withAuth(`/api/runs/${encodeURIComponent(id)}`), { headers: authHeaders() }).then(handleAuth).then(r => r.json()),
   trends: () => fetch('/api/trends', { headers: authHeaders() }).then(handleAuth).then(r => r.json()),
   monitors: () => fetch('/api/monitors', { headers: authHeaders() }).then(handleAuth).then(r => r.json()),
   addMonitor: (body) => fetch('/api/monitors', {
@@ -88,10 +104,53 @@ const API = {
     method: 'POST',
     headers: authHeaders(),
   }).then(handleAuth).then(r => r.json()),
-  deleteSession: (id) => fetch(`/api/monitors/${encodeURIComponent(id)}/session`, {
+  cancelRun: (id) => fetch(`/api/runs/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+    headers: authHeaders(),
+  }).then(handleAuth).then(async r => {
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    return body;
+  }),
+  // ─── plan review (human-in-the-loop) ───
+  draftPlan: (body) => fetch('/api/plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  }).then(handleAuth).then(r => r.json()),
+  createRun: (body) => fetch('/api/runs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  }).then(handleAuth).then(r => r.json()),
+  // ─── finding triage ───
+  patchFindingState: (runId, body) => fetch(`/api/runs/${encodeURIComponent(runId)}/findings`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  }).then(handleAuth),
+  // ─── run-to-run diff ───
+  diffRun: (runId) => fetch(`/api/runs/${encodeURIComponent(runId)}/diff`, { headers: authHeaders() }).then(handleAuth).then(r => r.json()),
+  // ─── publish to TestRail / Xray ───
+  publishRun: (runId, target) => fetch(`/api/runs/${encodeURIComponent(runId)}/publish`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ target }),
+  }).then(handleAuth).then(r => r.json()),
+  // ─── monitor edit + per-role sessions ───
+  updateMonitor: (id, body) => fetch(`/api/monitors/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  }).then(handleAuth).then(async r => ({ ok: r.ok, status: r.status, ...(await r.json().catch(() => ({}))) })),
+  recordLogin: (id, role) => fetch(`/api/monitors/${encodeURIComponent(id)}/record-login${role ? `?role=${encodeURIComponent(role)}` : ''}`, {
+    method: 'POST',
+    headers: authHeaders(),
+  }).then(handleAuth).then(async r => ({ ok: r.ok, status: r.status, ...(await r.json().catch(() => ({}))) })),
+  deleteSessionRole: (id, role) => fetch(`/api/monitors/${encodeURIComponent(id)}/session${role ? `?role=${encodeURIComponent(role)}` : ''}`, {
     method: 'DELETE',
     headers: authHeaders(),
-  }).then(handleAuth).then(r => r.json()),
+  }).then(handleAuth).then(async r => ({ ok: r.ok, status: r.status, ...(await r.json().catch(() => ({}))) })),
 };
 
 const app = document.getElementById('app');
@@ -217,9 +276,13 @@ function newRunFormHtml() {
         <label class="form-opt">Pages
           <input id="new-run-pages" type="number" min="1" max="100" value="5" aria-label="Max pages to crawl" />
         </label>
+        <label class="form-opt"><input id="new-run-active-testing" type="checkbox" /> Active input testing</label>
+        <label class="form-opt"><input id="new-run-authorized-target" type="checkbox" /> I am authorized to test this site</label>
         <button type="submit" class="btn btn-primary" id="new-run-start">▶ Start Test</button>
+        <button type="button" class="btn btn-ghost" id="new-run-plan" aria-label="Generate an AI test plan to review before running">🧭 Review plan</button>
       </form>
       <div id="new-run-error" class="error" style="display:none;" role="alert"></div>
+      <div id="plan-review-slot"></div>
       <div class="capability-chips" aria-hidden="true">
         <span class="chip">✦ AI-planned tests</span>
         <span class="chip">♿ Accessibility</span>
@@ -245,6 +308,8 @@ function wireNewRunForm() {
     e.preventDefault();
     const url = document.getElementById('new-run-url').value.trim();
     const maxPages = parseInt(document.getElementById('new-run-pages').value, 10) || 5;
+    const activeTesting = document.getElementById('new-run-active-testing').checked;
+    const authorizedTarget = document.getElementById('new-run-authorized-target').checked;
     const errBox = document.getElementById('new-run-error');
     const btn = document.getElementById('new-run-start');
 
@@ -253,10 +318,13 @@ function wireNewRunForm() {
     btn.textContent = 'Starting…';
 
     try {
+      if (activeTesting && !authorizedTarget) {
+        throw new Error('Confirm authorization before enabling active input testing.');
+      }
       const res = await fetch('/api/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ url, mode: 'matrix', options: { maxPages } }),
+        body: JSON.stringify({ url, mode: 'matrix', options: { maxPages, activeTesting, authorizedTarget } }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -267,6 +335,138 @@ function wireNewRunForm() {
       errBox.style.display = 'block';
       btn.disabled = false;
       btn.textContent = '▶ Start Test';
+    }
+  });
+
+  // "Review plan" — draft the plan first, let the human trim + approve it.
+  const planBtn = document.getElementById('new-run-plan');
+  if (planBtn) {
+    planBtn.addEventListener('click', async () => {
+      const url = document.getElementById('new-run-url').value.trim();
+      const maxPages = parseInt(document.getElementById('new-run-pages').value, 10) || 5;
+      const errBox = document.getElementById('new-run-error');
+      errBox.style.display = 'none';
+      if (!url) {
+        errBox.textContent = 'Enter a URL first, then generate a plan for review.';
+        errBox.style.display = 'block';
+        return;
+      }
+      planBtn.disabled = true;
+      planBtn.textContent = 'Drafting plan…';
+      try {
+        const data = await API.draftPlan({ url, options: { maxPages } });
+        if (data.error) throw new Error(data.error);
+        renderPlanReview(data.draftId, data.plan);
+        toast('Plan drafted — review, trim, then approve below.', 'success');
+        document.getElementById('plan-review')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      } catch (err) {
+        errBox.textContent = `Could not draft plan: ${err.message}`;
+        errBox.style.display = 'block';
+      } finally {
+        planBtn.disabled = false;
+        planBtn.textContent = '🧭 Review plan';
+      }
+    });
+  }
+}
+
+// ─── plan review (human-in-the-loop) ─────────────────────────────────
+
+/** One-line summary of a flow's step list: "5 steps · click A → assertText B". */
+function flowStepSummary(flow) {
+  const steps = flow.steps || [];
+  const describe = (s) => s ? `${s.action}${s.selector ? ` ${s.selector}` : ''}` : '—';
+  const first = steps[0];
+  const last = steps[steps.length - 1];
+  return `${steps.length} step${steps.length === 1 ? '' : 's'} · ${describe(first)} → ${describe(last)}`;
+}
+
+/**
+ * Render the reviewable plan: per-flow / per-endpoint checkboxes plus a
+ * "Run approved plan" button that POSTs /api/runs { planDraftId, plan }.
+ */
+function renderPlanReview(draftId, plan) {
+  const slot = document.getElementById('plan-review-slot');
+  if (!slot || !plan) return;
+  const flows = plan.flows || [];
+  const endpoints = plan.apiEndpoints || [];
+  const fuzz = plan.fuzzTargets || [];
+  const a11y = plan.a11yRules || [];
+
+  const flowsHtml = flows.length ? flows.map((f, i) => `
+      <label class="plan-item">
+        <input type="checkbox" class="plan-flow-check" data-idx="${i}" checked />
+        <span><strong>${escapeHtml(f.name)}</strong>
+          <span class="muted"> — ${escapeHtml(flowStepSummary(f))}${f.description ? ` · ${escapeHtml(f.description)}` : ''}</span>
+        </span>
+      </label>`).join('') : '<p class="muted" style="margin: 0.2rem 0;">No user flows inferred.</p>';
+
+  const endpointsHtml = endpoints.length ? endpoints.map((e, i) => `
+      <label class="plan-item">
+        <input type="checkbox" class="plan-endpoint-check" data-idx="${i}" checked />
+        <span><span class="method-chip">${escapeHtml(e.method || 'GET')}</span>
+          <code>${escapeHtml(e.path || '')}</code>
+          ${e.expectedStatus ? `<span class="muted">→ ${e.expectedStatus}</span>` : ''}
+          ${e.description ? `<span class="muted"> · ${escapeHtml(e.description)}</span>` : ''}
+        </span>
+      </label>`).join('') : '<p class="muted" style="margin: 0.2rem 0;">No API endpoints inferred.</p>';
+
+  slot.innerHTML = `
+    <div class="chart-card plan-review" id="plan-review">
+      <div class="chart-title">🧭 Review the AI test plan</div>
+      <p class="muted" style="margin-top: 0;">Uncheck anything you don't want tested, then approve — only checked flows and endpoints will run.</p>
+      <details open>
+        <summary>User flows (${flows.length})</summary>
+        <div class="plan-items">${flowsHtml}</div>
+      </details>
+      <details>
+        <summary>API endpoints (${endpoints.length})</summary>
+        <div class="plan-items">${endpointsHtml}</div>
+      </details>
+      <details>
+        <summary>Extras</summary>
+        <div class="plan-extras">
+          <span class="chip">🎲 ${fuzz.length} fuzz target${fuzz.length === 1 ? '' : 's'}</span>
+          <span class="chip">♿ ${a11y.length} a11y rule${a11y.length === 1 ? '' : 's'}</span>
+          ${(plan.browsers || []).map(b => `<span class="chip">🌐 ${escapeHtml(b)}</span>`).join('')}
+          ${(plan.executors || []).map(x => `<span class="chip">⚙ ${escapeHtml(x)}</span>`).join('')}
+        </div>
+      </details>
+      <div class="plan-actions">
+        <button type="button" class="btn btn-primary" id="run-approved-plan">▶ Run approved plan</button>
+        <button type="button" class="btn btn-ghost" id="discard-plan">Discard</button>
+        <span id="plan-error" class="error" style="display:none;" role="alert"></span>
+      </div>
+    </div>`;
+
+  document.getElementById('discard-plan').addEventListener('click', () => {
+    slot.innerHTML = '';
+  });
+
+  document.getElementById('run-approved-plan').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const errBox = document.getElementById('plan-error');
+    errBox.style.display = 'none';
+    // Apply the reviewer's checkboxes to a trimmed copy of the plan.
+    const flowChecks = slot.querySelectorAll('.plan-flow-check');
+    const endpointChecks = slot.querySelectorAll('.plan-endpoint-check');
+    const trimmedPlan = {
+      ...plan,
+      flows: flows.filter((_, i) => flowChecks[i]?.checked),
+      apiEndpoints: endpoints.filter((_, i) => endpointChecks[i]?.checked),
+    };
+    btn.disabled = true;
+    btn.textContent = 'Starting…';
+    try {
+      const data = await API.createRun({ planDraftId: draftId, plan: trimmedPlan });
+      if (data.error) throw new Error(data.error);
+      toast('Approved plan started — watch the live progress ▶', 'success');
+      window.location.hash = `#/runs/${encodeURIComponent(data.runId)}`;
+    } catch (err) {
+      errBox.textContent = `Could not start run: ${err.message}`;
+      errBox.style.display = 'inline-block';
+      btn.disabled = false;
+      btn.textContent = '▶ Run approved plan';
     }
   });
 }
@@ -321,9 +521,11 @@ async function renderRunList() {
           </div>` : ''}`;
     }
 
-    const cards = runs.map(r => {
+    const cards = (await Promise.all(runs.map(async r => {
       const url = r.url || 'Unknown site';
       const status = r.status || 'unknown';
+      const reportUrl = await withAuth(`/api/runs/${encodeURIComponent(r.runId)}/report.html`);
+      const jsonUrl = await withAuth(`/api/runs/${encodeURIComponent(r.runId)}/report.json`);
       return `
         <article class="run-card">
           <a class="run-card-link" href="#/runs/${encodeURIComponent(r.runId)}"
@@ -337,11 +539,11 @@ async function renderRunList() {
             <span class="run-chevron" aria-hidden="true">›</span>
           </a>
           <div class="run-actions">
-            <a href="${withAuth(`/api/runs/${encodeURIComponent(r.runId)}/report.html`)}" target="_blank" rel="noopener" class="btn btn-ghost" aria-label="Open HTML report for ${escapeHtml(url)}">Report</a>
-            <a href="${withAuth(`/api/runs/${encodeURIComponent(r.runId)}/report.json`)}" target="_blank" rel="noopener" class="btn btn-ghost" aria-label="Open JSON report for ${escapeHtml(url)}">JSON</a>
+            <a href="${reportUrl}" target="_blank" rel="noopener" class="btn btn-ghost" aria-label="Open HTML report for ${escapeHtml(url)}">Report</a>
+            <a href="${jsonUrl}" target="_blank" rel="noopener" class="btn btn-ghost" aria-label="Open JSON report for ${escapeHtml(url)}">JSON</a>
           </div>
         </article>`;
-    }).join('');
+    }))).join('');
 
     app.innerHTML = `
       ${hero}
@@ -402,15 +604,16 @@ async function renderRunDetail(runId) {
       else groups.push({ ruleId, items: [f] });
     }
 
-    const findingsHtml = groups.map(g => {
+    const findingsHtml = (await Promise.all(groups.map(async g => {
       const kinds = [...new Set(g.items.map(kindOf))].join(' ');
       const occ = g.items.reduce((s, f) => s + (f.occurrences || 1), 0);
       const pageCount = new Set(g.items.flatMap(f => f.affectedPages || [f.pageUrl].filter(Boolean))).size;
       if (g.items.length === 1) {
-        return `<div data-kind="${kinds}">${renderFindingCard(g.items[0], run.runId)}</div>`;
+        return `<div data-kind="${kinds}">${await renderFindingCard(g.items[0], run.runId)}</div>`;
       }
       const worst = g.items.reduce((w, f) => ((sevRank[f.severity] || 0) > (sevRank[w.severity] || 0) ? f : w), g.items[0]);
       const groupTitle = g.items[0].title.replace(/\s*\([^)]*\)\s*$/, '');
+      const groupItems = (await Promise.all(g.items.map(f => renderFindingCard(f, run.runId)))).join('');
       return `
         <details class="finding-group severity-${worst.severity}" data-kind="${kinds}">
           <summary>
@@ -419,9 +622,9 @@ async function renderRunDetail(runId) {
             <span class="group-count">${occ} occurrences · ${pageCount} page${pageCount === 1 ? '' : 's'}</span>
             <span class="group-chevron" aria-hidden="true">▾</span>
           </summary>
-          <div class="findings-list group-items">${g.items.map(f => renderFindingCard(f, run.runId)).join('')}</div>
+          <div class="findings-list group-items">${groupItems}</div>
         </details>`;
-    }).join('');
+    }))).join('');
 
     const findingsSection = `
       <div class="findings-toolbar">
@@ -469,6 +672,12 @@ async function renderRunDetail(runId) {
           </p>
           <p style="margin: 0.6rem 0 0;">
             <a href="#/" class="btn btn-ghost">← All runs</a>
+            ${isLive
+              ? '<button type="button" class="btn btn-ghost" id="cancel-run">■ Stop scan</button>'
+              : `<button type="button" class="btn btn-ghost" id="compare-run" title="Diff this run against the most recent earlier run">⇄ Compare with previous run</button>
+                 <button type="button" class="btn btn-ghost" id="export-evidence" title="Download the WCAG conformance evidence as JSON">📋 Export WCAG evidence</button>
+                 <button type="button" class="btn btn-ghost publish-btn" data-target="testrail" title="Publish results to TestRail">↗ Publish → TestRail</button>
+                 <button type="button" class="btn btn-ghost publish-btn" data-target="xray" title="Publish results to Xray">↗ Publish → Xray</button>`}
           </p>
         </div>
       </div>
@@ -481,6 +690,7 @@ async function renderRunDetail(runId) {
         <div class="stat"><span class="stat-icon">💡</span><div class="stat-value">${summary.recommendationCount ?? 0}</div><div class="stat-label">Recommendations</div></div>
       </div>
 
+      ${run.plan ? runPlanHtml(run.plan) : ''}
       ${emptyHtml}
     `;
 
@@ -495,6 +705,94 @@ async function renderRunDetail(runId) {
         document.getElementById('findings-list')?.setAttribute('data-filter', chip.dataset.filter);
       });
     });
+
+    // Finding triage — persist per-finding state (open/ack/false_positive/fixed)
+    wireTriageButtons(runId);
+
+    const compareBtn = document.getElementById('compare-run');
+    if (compareBtn) {
+      compareBtn.addEventListener('click', async () => {
+        compareBtn.disabled = true;
+        compareBtn.textContent = 'Comparing…';
+        try {
+          const diff = await API.diffRun(runId);
+          if (diff.error) throw new Error(diff.error);
+          showRunDiff(diff);
+          compareBtn.textContent = '⇄ Comparison shown below';
+        } catch (err) {
+          compareBtn.disabled = false;
+          compareBtn.textContent = '⇄ Compare with previous run';
+          toast(`Could not compare runs: ${err.message}`, 'error');
+        }
+      });
+    }
+
+    const evidenceBtn = document.getElementById('export-evidence');
+    if (evidenceBtn) {
+      evidenceBtn.addEventListener('click', async () => {
+        evidenceBtn.disabled = true;
+        try {
+          const res = await fetch(await withAuth(`/api/runs/${encodeURIComponent(runId)}/evidence`), { headers: authHeaders() }).then(handleAuth);
+          if (res.status === 501) {
+            const body = await res.json().catch(() => ({}));
+            toast(body.error || 'WCAG evidence export is not available yet.', 'info');
+            return;
+          }
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const blob = await res.blob();
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `evidence-${runId}.json`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+          toast('WCAG evidence exported ✓', 'success');
+        } catch (err) {
+          toast(`Could not export evidence: ${err.message}`, 'error');
+        } finally {
+          evidenceBtn.disabled = false;
+        }
+      });
+    }
+
+    app.querySelectorAll('.publish-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const target = btn.dataset.target;
+        btn.disabled = true;
+        try {
+          const data = await API.publishRun(runId, target);
+          if (data.error) throw new Error(data.error);
+          if (data.ok) {
+            toast(`Published to ${target}: ${typeof data.details === 'string' ? data.details : 'done ✓'}`, 'success');
+          } else {
+            toast(`Publish to ${target} did not succeed: ${typeof data.details === 'string' ? data.details : 'check the server logs'}`, 'info');
+          }
+        } catch (err) {
+          toast(`Could not publish to ${target}: ${err.message}`, 'error');
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
+
+    const cancelButton = document.getElementById('cancel-run');
+    if (cancelButton) {
+      cancelButton.addEventListener('click', async () => {
+        cancelButton.disabled = true;
+        cancelButton.textContent = 'Stopping…';
+        try {
+          await API.cancelRun(runId);
+          currentEventSource?.close();
+          toast('Scan stopped.', 'success');
+          renderRunDetail(runId);
+        } catch (err) {
+          cancelButton.disabled = false;
+          cancelButton.textContent = '■ Stop scan';
+          toast(`Could not stop scan: ${err.message}`, 'error');
+        }
+      });
+    }
 
     // If run is still active, show live progress + subscribe to SSE.
     // Anchored to the run header (always present) — the findings section may
@@ -516,7 +814,102 @@ async function renderRunDetail(runId) {
   }
 }
 
-function renderFindingCard(f, runId) {
+// ─── finding triage + run diff + plan view (run detail helpers) ──────
+
+const TRIAGE_LABELS = { open: 'Open', acknowledged: 'Ack', false_positive: 'False pos', fixed: 'Fixed' };
+
+/** Wire the per-finding triage buttons — PATCH, then flip active state in place. */
+function wireTriageButtons(runId) {
+  app.querySelectorAll('.triage-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const row = btn.closest('.triage-row');
+      if (!row || row.dataset.busy === '1') return;
+      row.dataset.busy = '1';
+      const body = {
+        ruleId: btn.dataset.ruleid,
+        pageUrl: btn.dataset.pageurl,
+        state: btn.dataset.state,
+      };
+      try {
+        const res = await API.patchFindingState(runId, body);
+        if (res.status === 501) {
+          const data = await res.json().catch(() => ({}));
+          toast(data.error || 'Triage storage is not available yet.', 'info');
+        } else if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `HTTP ${res.status}`);
+        } else {
+          row.querySelectorAll('.triage-btn').forEach(b => {
+            b.classList.toggle('active', b === btn);
+            b.setAttribute('aria-pressed', String(b === btn));
+          });
+          toast(`Marked as ${body.state === 'false_positive' ? 'false positive' : body.state} ✓`, 'success');
+        }
+      } catch (err) {
+        toast(`Could not update triage: ${err.message}`, 'error');
+      } finally {
+        row.dataset.busy = '0';
+      }
+    });
+  });
+}
+
+/** Collapsible "Test plan" section for the approved plan stored on the run. */
+function runPlanHtml(plan) {
+  const flows = plan.flows || [];
+  const endpoints = plan.apiEndpoints || [];
+  const status = plan.status ? String(plan.status) : '';
+  return `
+    <details class="chart-card plan-view" id="run-plan">
+      <summary class="chart-title">🧭 Test plan — ${flows.length} flow${flows.length === 1 ? '' : 's'} · ${endpoints.length} endpoint${endpoints.length === 1 ? '' : 's'}${status ? ` · ${escapeHtml(status)}` : ''}</summary>
+      ${flows.length ? `<div class="plan-items">
+        ${flows.map(f => `<div class="plan-item"><span>✅ <strong>${escapeHtml(f.name)}</strong>
+          <span class="muted"> — ${escapeHtml(flowStepSummary(f))}</span></span></div>`).join('')}
+      </div>` : '<p class="muted" style="margin: 0.2rem 0;">No flows recorded in the plan.</p>'}
+      ${endpoints.length ? `<div class="plan-items">
+        ${endpoints.map(e => `<div class="plan-item"><span class="method-chip">${escapeHtml(e.method || 'GET')}</span><code>${escapeHtml(e.path || '')}</code>${e.expectedStatus ? `<span class="muted">→ ${e.expectedStatus}</span>` : ''}</div>`).join('')}
+      </div>` : ''}
+    </details>`;
+}
+
+function diffSectionHtml(title, items, tone) {
+  return `
+    <div class="diff-section diff-${tone}">
+      <h3>${title} (${items.length})</h3>
+      ${items.length ? items.map(f => `
+        <div class="diff-item">
+          <span class="badge ${f.severity || 'info'}">${SEVERITY_ICONS[f.severity] || ''} ${f.severity || 'info'}</span>
+          <strong>${escapeHtml(f.title || 'Untitled finding')}</strong>
+          ${f.ruleId ? `<span class="badge badge-rule">${escapeHtml(f.ruleId)}</span>` : ''}
+          ${f.previousSeverity ? `<span class="badge badge-neutral">was ${escapeHtml(f.previousSeverity)}</span>` : ''}
+          ${f.pageUrl ? `<a class="diff-url" href="${escapeHtml(f.pageUrl)}" target="_blank" rel="noopener">${escapeHtml(f.pageUrl)}</a>` : ''}
+        </div>`).join('') : '<p class="muted" style="margin: 0.2rem 0 0;">None.</p>'}
+    </div>`;
+}
+
+/** Render the run-to-run comparison card under the stats strip. */
+function showRunDiff(diff) {
+  const existing = document.getElementById('run-diff');
+  if (existing) existing.remove();
+  const card = document.createElement('div');
+  card.className = 'chart-card run-diff';
+  card.id = 'run-diff';
+  const delta = diff.scoreDelta != null
+    ? `<span class="diff-delta ${diff.scoreDelta >= 0 ? 'up' : 'down'}" title="Score change vs previous run">${diff.scoreDelta >= 0 ? '+' : ''}${diff.scoreDelta}</span>`
+    : '';
+  card.innerHTML = `
+    <div class="chart-title">⇄ Run comparison — <span class="muted">${escapeHtml(diff.runId || '')} vs ${escapeHtml(diff.against || '')}</span> ${delta}</div>
+    ${diffSectionHtml('🆕 New findings', diff.newFindings || [], 'new')}
+    ${diffSectionHtml('✅ Resolved', diff.resolvedFindings || [], 'resolved')}
+    ${diffSectionHtml('♻ Persistent', diff.persistentFindings || [], 'persistent')}
+    <p class="muted" style="margin-bottom: 0;">${escapeHtml(diff.summary || '')}</p>`;
+  const stats = app.querySelector('.stats');
+  if (stats) stats.after(card);
+  else app.prepend(card);
+  card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function renderFindingCard(f, runId) {
   const sev = f.severity || 'info';
   const icon = SEVERITY_ICONS[sev] || 'ℹ️';
   const badge = `<span class="badge ${sev}">${icon} ${sev}</span>`;
@@ -550,12 +943,26 @@ function renderFindingCard(f, runId) {
     ? `<div class="finding-fix"><strong>Fix:</strong> ${escapeHtml(f.suggestedFix)}</div>`
     : '';
 
-  const screenshot = f.screenshot
-    ? `<img class="finding-screenshot" src="${withAuth(`/api/runs/${encodeURIComponent(runId)}/screenshots/${encodeURIComponent(f.screenshot.replace(/^.*\//, ''))}`)}" alt="Screenshot for ${escapeHtml(f.title)}" loading="lazy" />`
+  const screenshotUrl = f.screenshot
+    ? await withAuth(`/api/runs/${encodeURIComponent(runId)}/screenshots/${encodeURIComponent(f.screenshot.replace(/^.*\//, ''))}`)
+    : null;
+  const screenshot = screenshotUrl
+    ? `<img class="finding-screenshot" src="${screenshotUrl}" alt="Screenshot for ${escapeHtml(f.title)}" loading="lazy" />`
     : '';
 
   const matrixCells = f.matrixCells?.length
     ? `<div class="finding-meta">Observed in: ${f.matrixCells.map(escapeHtml).join(', ')}</div>`
+    : '';
+
+  // Triage state buttons — persisted via PATCH /api/runs/:id/findings
+  const triageState = f.triageState || 'open';
+  const triageRow = (f.ruleId && f.pageUrl)
+    ? `<div class="triage-row" role="group" aria-label="Triage state">
+        ${Object.entries(TRIAGE_LABELS).map(([state, label]) =>
+          `<button type="button" class="triage-btn triage-${state}${triageState === state ? ' active' : ''}"
+             data-ruleid="${escapeHtml(f.ruleId)}" data-pageurl="${escapeHtml(f.pageUrl)}" data-state="${state}"
+             aria-pressed="${triageState === state}">${label}</button>`).join('')}
+      </div>`
     : '';
 
   return `
@@ -564,12 +971,13 @@ function renderFindingCard(f, runId) {
         <div class="finding-title">${escapeHtml(f.title)}</div>
         <div>${badge}${confidence}${origin}${ruleId}</div>
       </div>
-      ${page}${description}${evidence}${fix}${screenshot}${occurrences}${matrixCells}
+      ${page}${description}${evidence}${fix}${screenshot}${occurrences}${matrixCells}${triageRow}
     </div>`;
 }
 
-function subscribeToEvents(runId) {
-  currentEventSource = new EventSource(withAuth(`/api/runs/${encodeURIComponent(runId)}/events`));
+async function subscribeToEvents(runId) {
+  const sseUrl = await withAuth(`/api/runs/${encodeURIComponent(runId)}/events`);
+  currentEventSource = new EventSource(sseUrl);
 
   currentEventSource.onmessage = (evt) => {
     try {
@@ -616,20 +1024,27 @@ async function renderMonitors() {
       const statusChip = m.lastStatus
         ? `<span class="run-status ${m.lastStatus}">${m.lastStatus}</span>`
         : '<span class="run-status">waiting</span>';
-      // Recorded session chip (record-once login)
-      const hasSession = m.session?.exists;
-      const sessionChip = hasSession
-        ? `<span class="session-chip ok" title="Cookies: ${m.session.cookieCount || 0} · domains: ${escapeHtml((m.session.domains || []).join(', ') || '—')}">
-             🔑 Session ✓ ${m.sessionRecordedAt ? `· ${formatDate(m.sessionRecordedAt)}` : ''}
-           </span>
-           ${m.sessionExpired ? '<span class="session-chip expired">⚠ Session expired — re-record</span>' : ''}`
+      const roles = Array.isArray(m.roles) ? m.roles : [];
+      const rolesChip = roles.length
+        ? `<div class="run-pills"><span class="session-chip">👤 Roles: ${roles.map(r => `<span class="chip role-chip">${escapeHtml(r)}</span>`).join(' ')}</span></div>`
+        : '';
+      // Recorded sessions, one chip per role (with per-session delete)
+      const sessions = Array.isArray(m.sessions)
+        ? m.sessions
+        : (m.session?.exists ? [{ role: 'default', ...m.session }] : []);
+      const sessionChips = sessions.length
+        ? sessions.map(s => `
+            <span class="session-chip ok" title="role: ${escapeHtml(s.role || 'default')} · cookies: ${s.cookieCount || 0} · domains: ${escapeHtml((s.domains || []).join(', ') || '—')}">
+              🔑 ${escapeHtml(s.role || 'default')} ✓ ${s.recordedAt ? `· ${formatDate(s.recordedAt)}` : ''}
+              <button class="session-role-delete" data-role="${escapeHtml(s.role || 'default')}" aria-label="Delete recorded session for role ${escapeHtml(s.role || 'default')}">✕</button>
+            </span>`).join(' ')
         : '<span class="session-chip">🔓 No session — public pages only</span>';
-      const sessionActions = hasSession
-        ? `<button class="btn btn-ghost monitor-rerecord" data-id="${escapeHtml(m.id)}" aria-label="Re-record login for ${escapeHtml(m.label || m.id)}">🔑 Re-record</button>
-           <button class="btn btn-ghost monitor-delsession" data-id="${escapeHtml(m.id)}" aria-label="Remove saved session for ${escapeHtml(m.label || m.id)}">Remove session</button>`
+      const expiredChip = m.sessionExpired ? '<span class="session-chip expired">⚠ Session expired — re-record</span>' : '';
+      const recordBtn = sessions.length
+        ? `<button class="btn btn-ghost monitor-rerecord" data-id="${escapeHtml(m.id)}" aria-label="Re-record login for ${escapeHtml(m.label || m.id)}">🔑 Re-record</button>`
         : `<button class="btn monitor-record" data-id="${escapeHtml(m.id)}" aria-label="Record login for ${escapeHtml(m.label || m.id)}">🔑 Record login</button>`;
       return `
-        <article class="run-card monitor-card" data-id="${escapeHtml(m.id)}">
+        <article class="run-card monitor-card" data-id="${escapeHtml(m.id)}" data-roles="${escapeHtml(JSON.stringify(roles))}">
           <div class="run-card-link">
             ${scoreRingHtml(m.lastScore, 64)}
             <div class="run-meta">
@@ -640,14 +1055,26 @@ async function renderMonitors() {
                 ${m.onlyNewFindings !== false ? '· regressions only' : '· all findings'}
               </div>
               <div class="run-pills">${statusChip}<span class="run-time">Last: ${lastRun}</span><span class="run-time">Next: ${next}</span></div>
-              <div class="run-pills">${sessionChip}</div>
+              ${rolesChip}
+              <div class="run-pills">${sessionChips}${expiredChip}</div>
             </div>
           </div>
           <div class="run-actions">
             <button class="btn btn-primary monitor-run" data-id="${escapeHtml(m.id)}" aria-label="Run test now for ${escapeHtml(m.label || m.id)}">▶ Run now</button>
-            ${sessionActions}
+            ${recordBtn}
+            <button class="btn btn-ghost monitor-edit" data-id="${escapeHtml(m.id)}" aria-label="Edit monitor ${escapeHtml(m.label || m.id)}">✏ Edit</button>
             <button class="btn btn-ghost monitor-delete" data-id="${escapeHtml(m.id)}" aria-label="Delete monitor ${escapeHtml(m.label || m.id)}">Delete</button>
           </div>
+          <form class="monitor-edit-form" style="display:none;" aria-label="Edit monitor ${escapeHtml(m.label || m.id)}">
+            <input type="text" class="edit-label" value="${escapeHtml(m.label || '')}" aria-label="Monitor label" />
+            <input type="url" class="edit-url" value="${escapeHtml(m.url || '')}" aria-label="Monitor URL" />
+            <label class="form-opt">Every
+              <input type="number" class="edit-interval" min="1" max="720" value="${m.intervalHours ?? 24}" aria-label="Interval in hours" /> h
+            </label>
+            <input type="text" class="edit-roles" value="${escapeHtml(roles.join(', '))}" placeholder="Roles (comma-separated)" aria-label="Roles (comma separated)" />
+            <button type="submit" class="btn btn-primary">Save</button>
+            <button type="button" class="btn btn-ghost edit-cancel">Cancel</button>
+          </form>
         </article>`;
     }).join('');
 
@@ -662,6 +1089,7 @@ async function renderMonitors() {
         <form id="monitor-form">
           <input id="monitor-label" type="text" placeholder="Client / site name (e.g. Acme Marketing)" required aria-label="Monitor label" />
           <input id="monitor-url" type="url" placeholder="https://client-site.com" required aria-label="Monitor URL" />
+          <input id="monitor-roles" type="text" placeholder="Roles (comma-separated, e.g. admin,guest)" aria-label="Roles (comma separated)" />
           <label class="form-opt">Every
             <input id="monitor-interval" type="number" min="1" max="720" value="24" aria-label="Interval in hours" /> h
           </label>
@@ -766,6 +1194,7 @@ function wireMonitorForm() {
     const errBox = document.getElementById('monitor-error');
     errBox.style.display = 'none';
     const label = document.getElementById('monitor-label').value.trim();
+    const rolesRaw = document.getElementById('monitor-roles').value.trim();
     try {
       const result = await API.addMonitor({
         id: slugify(label),
@@ -774,6 +1203,8 @@ function wireMonitorForm() {
         intervalHours: parseInt(document.getElementById('monitor-interval').value, 10) || 24,
         options: { maxPages: parseInt(document.getElementById('monitor-pages').value, 10) || 5 },
         onlyNewFindings: document.getElementById('monitor-newonly').checked,
+        // Only send roles when provided — older stores reject unknown fields
+        ...(rolesRaw ? { roles: rolesRaw } : {}),
       });
       if (result.error) throw new Error(result.error);
       toast(`Now monitoring “${label}” 📡`, 'success');
@@ -803,15 +1234,22 @@ function wireMonitorButtons() {
   });
   app.querySelectorAll('.monitor-record, .monitor-rerecord').forEach(btn => {
     btn.addEventListener('click', async () => {
+      // Multi-role recording: when the monitor has roles configured, ask which
+      // one is being recorded (empty answer = 'default').
+      const card = btn.closest('.monitor-card');
+      let roles = [];
+      try { roles = JSON.parse(card?.dataset.roles || '[]'); } catch { roles = []; }
+      let role = '';
+      if (Array.isArray(roles) && roles.length) {
+        const answer = prompt(`Which role are you recording? Configured: ${roles.join(', ')}\n(leave empty for "default")`, roles[0]);
+        if (answer === null) return; // cancelled
+        role = answer.trim();
+      }
       btn.disabled = true;
       try {
-        const res = await fetch(`/api/monitors/${encodeURIComponent(btn.dataset.id)}/record-login`, {
-          method: 'POST',
-          headers: authHeaders(),
-        }).then(handleAuth);
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        toast('Browser window opened — log in, then click "✅ Save session" in the banner.', 'success');
+        const data = await API.recordLogin(btn.dataset.id, role);
+        if (!data.ok) throw new Error(data.error || `HTTP ${data.status}`);
+        toast(`Browser window opened — log in as ${role || 'default'}, then click "✅ Save session" in the banner.`, 'success');
         btn.disabled = false;
         startRecordPolling();
       } catch (err) {
@@ -820,12 +1258,55 @@ function wireMonitorButtons() {
       }
     });
   });
-  app.querySelectorAll('.monitor-delsession').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      if (!confirm('Remove the saved login session for this monitor?')) return;
-      await API.deleteSession(btn.dataset.id).catch(err => toast(err.message, 'error'));
-      toast('Saved session removed', 'info');
-      renderMonitors();
+  app.querySelectorAll('.session-role-delete').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const card = btn.closest('.monitor-card');
+      const id = card?.dataset.id;
+      const role = btn.dataset.role;
+      if (!confirm(`Delete the recorded session for role "${role}"?`)) return;
+      try {
+        const result = await API.deleteSessionRole(id, role);
+        if (!result.ok) throw new Error(result.error || `HTTP ${result.status}`);
+        toast(`Session for ${role} removed`, 'info');
+        renderMonitors();
+      } catch (err) {
+        toast(`Could not delete session: ${err.message}`, 'error');
+      }
+    });
+  });
+  app.querySelectorAll('.monitor-edit').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const card = btn.closest('.monitor-card');
+      const form = card?.querySelector('.monitor-edit-form');
+      if (!form) return;
+      const show = form.style.display === 'none';
+      form.style.display = show ? 'flex' : 'none';
+      if (show) form.querySelector('.edit-label')?.focus();
+    });
+  });
+  app.querySelectorAll('.monitor-edit-form').forEach(form => {
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const id = form.closest('.monitor-card')?.dataset.id;
+      const body = {
+        label: form.querySelector('.edit-label').value.trim(),
+        url: form.querySelector('.edit-url').value.trim(),
+        intervalHours: parseInt(form.querySelector('.edit-interval').value, 10) || 24,
+      };
+      const rolesRaw = form.querySelector('.edit-roles').value.trim();
+      if (rolesRaw) body.roles = rolesRaw;
+      try {
+        const result = await API.updateMonitor(id, body);
+        if (!result.ok) throw new Error(result.error || `HTTP ${result.status}`);
+        toast('Monitor updated ✓', 'success');
+        renderMonitors();
+      } catch (err) {
+        toast(`Could not update monitor: ${err.message}`, 'error');
+      }
+    });
+    form.querySelector('.edit-cancel')?.addEventListener('click', () => {
+      form.style.display = 'none';
     });
   });
   app.querySelectorAll('.monitor-delete').forEach(btn => {

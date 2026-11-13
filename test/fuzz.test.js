@@ -5,6 +5,7 @@ import fuzzExecutor, {
   generateInputs,
   isAcceptableOutcome,
   fuzzApiField,
+  fuzzFormField,
 } from '../src/executors/fuzz.js';
 import { createFindingFactory } from '../src/services/findingFactory.js';
 
@@ -189,6 +190,56 @@ describe('fuzzApiField', () => {
   });
 });
 
+describe('fuzzFormField', () => {
+  it('fills a browser field without submitting in safe mode', async () => {
+    const calls = [];
+    const page = {
+      on() {},
+      async goto() { return { status: () => 200 }; },
+      locator(selector) {
+        return {
+          first() { return this; },
+          async fill(value) { calls.push(['fill', selector, value]); },
+        };
+      },
+      async close() { calls.push(['close']); },
+    };
+    const result = await fuzzFormField({
+      pageUrl: 'https://example.com/form', fieldSelector: 'input[name="email"]',
+    }, 'mutated@example.com', { context: { async newPage() { return page; } }, options: {} });
+
+    assert.equal(result.threw, false);
+    assert.deepEqual(calls, [
+      ['fill', 'input[name="email"]', 'mutated@example.com'],
+      ['close'],
+    ]);
+  });
+
+  it('submits only for an authorized active scan with a submit selector', async () => {
+    const calls = [];
+    const page = {
+      on() {},
+      async goto() { return { status: () => 200 }; },
+      locator(selector) {
+        return {
+          first() { return this; },
+          async fill(value) { calls.push(['fill', selector, value]); },
+          async click() { calls.push(['click', selector]); },
+        };
+      },
+      async close() { calls.push(['close']); },
+    };
+    await fuzzFormField({
+      pageUrl: 'https://example.com/form', fieldSelector: 'input', submitSelector: 'button[type="submit"]',
+    }, 'value', {
+      context: { async newPage() { return page; } },
+      options: { allowActiveFuzz: true },
+    });
+
+    assert.ok(calls.some(call => call[0] === 'click'));
+  });
+});
+
 // ─── executor end-to-end ────────────────────────────────────────────
 
 describe('fuzzExecutor end-to-end', () => {
@@ -220,6 +271,7 @@ describe('fuzzExecutor end-to-end', () => {
       iterations: 5,
       expectStatus: 'no-5xx',
     }];
+    ctx.options.allowActiveFuzz = true;
     ctx.options.fetch = async (url, init) => {
       const body = JSON.parse(init.body);
       // Return 500 for oversize input
@@ -236,6 +288,39 @@ describe('fuzzExecutor end-to-end', () => {
     assert.match(result.findings[0].title, /oversize/);
   });
 
+  it('reports form fuzz failures with the page and selector instead of undefined fields', async () => {
+    const ctx = {
+      plan: { targetUrl: 'https://example.com', apiEndpoints: [], fuzzTargets: [] },
+      options: {},
+      createFinding: createFindingFactory(),
+      onEvent: () => {},
+      signal: undefined,
+    };
+    ctx.plan.fuzzTargets = [{
+      pageUrl: 'https://example.com/signup',
+      fieldSelector: '#email',
+      generators: ['empty'],
+      iterations: 1,
+      expectStatus: 'no-crash',
+    }];
+    ctx.context = {
+      newPage: async () => ({
+        goto: async () => ({ status: () => 200 }),
+        on: (event, handler) => {
+          if (event === 'pageerror') handler(new Error('form crashed'));
+        },
+        locator: () => ({ first: () => ({ fill: async () => {} }) }),
+        close: async () => {},
+      }),
+    };
+
+    const result = await fuzzExecutor(ctx);
+    assert.equal(result.findings.length, 1);
+    assert.match(result.findings[0].title, /https:\/\/example\.com\/signup #email/);
+    assert.doesNotMatch(result.findings[0].title, /undefined/);
+    assert.equal(result.findings[0].pageUrl, 'https://example.com/signup');
+  });
+
   it('does NOT emit findings when all fuzz responses are acceptable', async () => {
     ctx.plan.apiEndpoints = [{
       method: 'POST',
@@ -249,15 +334,31 @@ describe('fuzzExecutor end-to-end', () => {
       iterations: 1,
       expectStatus: 'no-5xx',
     }];
+    ctx.options.allowActiveFuzz = true;
     ctx.options.fetch = async () => ({ status: 400, headers: new Headers() });
 
     const result = await fuzzExecutor(ctx);
     assert.equal(result.findings.length, 0);
+    assert.equal(result.stats.skippedInputs, 0);
+  });
+
+  it('does not mutate API targets unless active testing is authorized', async () => {
+    ctx.plan.apiEndpoints = [{ method: 'POST', path: '/x', body: { value: 'safe' } }];
+    ctx.plan.fuzzTargets = [{
+      apiEndpointRef: '/x', field: 'value', generators: ['empty'], iterations: 1,
+    }];
+    let requestCount = 0;
+    ctx.options.fetch = async () => { requestCount++; return { status: 200, headers: new Headers() }; };
+
+    const result = await fuzzExecutor(ctx);
+    assert.equal(requestCount, 0);
+    assert.equal(result.stats.skippedActiveTargets, 1);
   });
 
   it('handles empty fuzz targets (no-op)', async () => {
     const result = await fuzzExecutor(ctx);
     assert.equal(result.findings.length, 0);
+    assert.equal(result.stats.skippedInputs, 0);
     assert.equal(result.stats.targetsRun, 0);
   });
 
@@ -271,6 +372,7 @@ describe('fuzzExecutor end-to-end', () => {
     }];
     const result = await fuzzExecutor(ctx);
     assert.equal(result.findings.length, 0);
+    assert.equal(result.stats.skippedInputs, 1);
   });
 
   it('respects abort signal', async () => {
@@ -285,5 +387,57 @@ describe('fuzzExecutor end-to-end', () => {
     ctx.options.fetch = async () => ({ status: 200, headers: new Headers() });
     const result = await fuzzExecutor(ctx);
     assert.equal(result.findings.length, 0);
+  });
+
+  it('backs off on 429 — stops hammering and records no finding', async () => {
+    ctx.plan.apiEndpoints = [{ method: 'POST', path: '/login', body: { email: 'x' } }];
+    ctx.plan.fuzzTargets = [{
+      apiEndpointRef: '/login', field: 'email',
+      generators: ['oversize'], iterations: 5, expectStatus: 'no-5xx',
+    }];
+    ctx.options.allowActiveFuzz = true;
+    ctx.options.delayMs = 0;
+    const events = [];
+    ctx.onEvent = (m) => events.push(m);
+    let requests = 0;
+    ctx.options.fetch = async () => { requests++; return { status: 429, headers: new Headers() }; };
+
+    const result = await fuzzExecutor(ctx);
+    assert.equal(requests, 1, 'must NOT hammer after a 429');
+    assert.equal(result.findings.length, 0, 'rate limiting is not a fuzz failure');
+    assert.equal(result.stats.rateLimitedTargets, 1);
+    assert.ok(events.some(e => /rate limited — backing off/.test(e)));
+  });
+
+  it('backs off on 503 too', async () => {
+    ctx.plan.apiEndpoints = [{ method: 'POST', path: '/login', body: { email: 'x' } }];
+    ctx.plan.fuzzTargets = [{
+      apiEndpointRef: '/login', field: 'email',
+      generators: ['oversize'], iterations: 4, expectStatus: 'no-5xx',
+    }];
+    ctx.options.allowActiveFuzz = true;
+    ctx.options.delayMs = 0;
+    let requests = 0;
+    ctx.options.fetch = async () => { requests++; return { status: 503, headers: new Headers() }; };
+
+    const result = await fuzzExecutor(ctx);
+    assert.equal(requests, 1);
+    assert.equal(result.findings.length, 0);
+    assert.equal(result.stats.rateLimitedTargets, 1);
+  });
+
+  it('applies delayMs between iterations (default 100ms, configurable)', async () => {
+    ctx.plan.apiEndpoints = [{ method: 'POST', path: '/login', body: { email: 'x' } }];
+    ctx.plan.fuzzTargets = [{
+      apiEndpointRef: '/login', field: 'email',
+      generators: ['empty', 'oversize'], iterations: 2, expectStatus: 'no-5xx',
+    }];
+    ctx.options.allowActiveFuzz = true;
+    ctx.options.delayMs = 30;  // small but measurable
+    const start = Date.now();
+    ctx.options.fetch = async () => ({ status: 200, headers: new Headers() });
+    await fuzzExecutor(ctx);
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed >= 25, `expected at least one 30ms delay between the 2 iterations, elapsed=${elapsed}ms`);
   });
 });

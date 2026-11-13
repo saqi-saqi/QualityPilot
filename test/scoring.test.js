@@ -66,6 +66,41 @@ describe('calculateScore', () => {
     assert.equal(calculateScore(findings), 74.2);
   });
 
+  it('scales deductions with occurrences (log2, capped at 3x)', () => {
+    const one = [{ severity: 'high', confidence: 'confirmed', findingType: 'bug', occurrences: 1 }];
+    const three = [{ severity: 'high', confidence: 'confirmed', findingType: 'bug', occurrences: 3 }];
+    const sixteen = [{ severity: 'high', confidence: 'confirmed', findingType: 'bug', occurrences: 16 }];
+
+    // occurrences=1 → multiplier 1.0 → 100 - 8 = 92
+    assert.equal(calculateScore(one), 92);
+    // occurrences=3 → 1 + log2(3)*0.5 ≈ 1.7925 → 100 - 14.34 ≈ 85.66
+    const threeScore = calculateScore(three);
+    assert.ok(threeScore < 92, 'more occurrences must deduct more');
+    assert.ok(Math.abs(threeScore - (100 - 8 * (1 + Math.log2(3) * 0.5))) < 1e-9, 'exact log2 scaling');
+    // occurrences=16 → raw multiplier 3.0 = cap → 100 - 24 = 76
+    assert.equal(calculateScore(sixteen), 76);
+    // occurrences far beyond the cap stay at the cap (32 → still 3.0)
+    assert.equal(
+      calculateScore([{ severity: 'high', confidence: 'confirmed', findingType: 'bug', occurrences: 512 }]),
+      76
+    );
+  });
+
+  it('aligns summary.bySeverity with totalFindings (coverage + unauth probes excluded from both)', () => {
+    const findings = [
+      { severity: 'high', confidence: 'confirmed', findingType: 'bug', category: 'links' },
+      { severity: 'info', confidence: 'high', category: 'Scan Coverage', findingType: 'coverage-failure', ruleId: 'page-load-failure' },
+      { severity: 'low', confidence: 'suspected', category: 'network', findingType: 'environmental', unauthenticated: true },
+    ];
+    const s = summarizeFindings(findings, 2);
+    assert.equal(s.totalFindings, 1);
+    assert.equal(s.bySeverity.high, 1);
+    assert.equal(s.bySeverity.info, 0);
+    assert.equal(s.bySeverity.low, 0);
+    const severitySum = Object.values(s.bySeverity).reduce((a, b) => a + b, 0);
+    assert.equal(severitySum, s.totalFindings);
+  });
+
   it('handles legacy confidence aliases', () => {
     const probable = [{ severity: 'high', confidence: 'probable', findingType: 'bug' }];
     const suspected = [{ severity: 'high', confidence: 'suspected', findingType: 'bug' }];

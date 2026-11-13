@@ -23,7 +23,7 @@ describe('Golden Fixture Report Tests (Ground Truth Verification)', () => {
     process.env.SQA_PAGE_TIMEOUT_MS = '1500';
 
     fixture = await startFixtureServer(0);
-    browserPool = new BrowserPool();
+    browserPool = new BrowserPool({ options: { allowPrivateTargets: true } });
     registerAllExecutors();
     registerLegacyChecks();
   });
@@ -78,7 +78,7 @@ describe('Golden Fixture Report Tests (Ground Truth Verification)', () => {
       browserPool,
       createFinding,
       onEvent: () => {},
-      options: { dedup: true },
+      options: { dedup: true, allowPrivateTargets: true },
     });
 
     const pagesAttempted = plan.pages.length;
@@ -189,7 +189,7 @@ describe('Golden Fixture Report Tests (Ground Truth Verification)', () => {
       plan,
       browserPool,
       createFinding,
-      options: { dedup: true },
+      options: { dedup: true, allowPrivateTargets: true },
     });
 
     const a11yFindings = result.findings.filter(f => f.ruleId === 'axe-image-alt');
@@ -264,7 +264,7 @@ describe('Golden Fixture Report Tests (Ground Truth Verification)', () => {
       plan,
       browserPool,
       createFinding,
-      options: { dedup: true },
+      options: { dedup: true, allowPrivateTargets: true },
     });
 
     assert.equal(result.findings.length, 0, 'Clean page must produce 0 findings');
@@ -298,7 +298,7 @@ describe('Golden Fixture Report Tests (Ground Truth Verification)', () => {
       plan,
       browserPool,
       createFinding,
-      options: { dedup: true },
+      options: { dedup: true, allowPrivateTargets: true },
     });
 
     assert.equal(result.coverageFailures.length, 1, 'Must produce exactly 1 coverage failure entry');
@@ -334,7 +334,7 @@ describe('Golden Fixture Report Tests (Ground Truth Verification)', () => {
       plan,
       browserPool: null,
       createFinding,
-      options: { dedup: true },
+      options: { dedup: true, allowPrivateTargets: true },
     });
 
     const always400Finding = result.findings.find(f => f.pageUrl?.includes('/api/always-400'));

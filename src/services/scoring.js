@@ -1,6 +1,20 @@
 import { config } from '../utils/config.js';
 
 /**
+ * Occurrences multiplier: repeated instances of the same finding weigh a bit
+ * more than a single hit, but sub-linearly (log2) and hard-capped so one
+ * noisy rule can't zero out a score.
+ *   occurrences=1 → 1.0, 2 → 1.5, 4 → 2.0, 8 → 2.5, ≥16 → capped at 3.0
+ */
+export const MAX_OCCURRENCES_MULTIPLIER = 3;
+
+export function occurrencesMultiplier(finding) {
+  const occurrences = Number(finding?.occurrences) || 1;
+  const raw = 1 + Math.log2(Math.max(occurrences, 1)) * 0.5;
+  return Math.min(raw, MAX_OCCURRENCES_MULTIPLIER);
+}
+
+/**
  * Check if a finding is a coverage / page-load failure rather than a content issue.
  */
 export function isCoverageFailure(finding) {
@@ -127,7 +141,11 @@ export function calculateScore(findings, options = {}) {
       originMult = 0.2;
     }
 
-    const deduction = base * confMult * typeMult * originMult;
+    // Repeated occurrences of the same finding scale the deduction up
+    // (log2-scaled, hard-capped — see occurrencesMultiplier).
+    const occurrencesMult = occurrencesMultiplier(finding);
+
+    const deduction = base * confMult * typeMult * originMult * occurrencesMult;
     totalDeductions += deduction;
   }
 
@@ -195,8 +213,11 @@ export function summarizeFindings(findings, pages, options = {}) {
       }
     }
 
-    // Severity count
-    if (finding.severity && summary.bySeverity.hasOwnProperty(finding.severity)) {
+    // Severity count — aligned with totalFindings: coverage failures and
+    // excluded unauthenticated probes are infrastructure noise, not content
+    // defects, so they stay out of bySeverity too. Invariant: the sum of
+    // bySeverity always equals totalFindings.
+    if (!isCoverage && !isUnauth && finding.severity && summary.bySeverity.hasOwnProperty(finding.severity)) {
       summary.bySeverity[finding.severity]++;
     }
 

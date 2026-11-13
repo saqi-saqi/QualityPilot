@@ -147,24 +147,48 @@ export class JobQueue {
     return info.changes > 0;
   }
 
-  /**
-   * Recover stale or interrupted jobs on startup.
-   * If the process crashed while jobs were 'running', resets them to 'pending'
-   * (if retries remain) or marks them failed.
-   */
-  recoverStaleJobs({ staleTimeoutMs = 15 * 60 * 1000 } = {}) {
-    const recoverTx = this.db.transaction(() => {
-      const cutoff = new Date(Date.now() - staleTimeoutMs).toISOString();
+  cancel(runId, reason = 'Cancelled by user') {
+    const stmt = this.db.prepare(`
+      UPDATE job_queue
+      SET status = 'cancelled',
+          locked_at = NULL,
+          locked_by = NULL,
+          last_error = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE run_id = ? AND status IN ('pending', 'running')
+    `);
+    const info = stmt.run(String(reason), runId);
+    return info.changes > 0;
+  }
 
-      // Find jobs that were running when the process died or exceeded timeout
+  /**
+   * Recover interrupted jobs on startup.
+   *
+   * This is a single-process application: ANY job still marked 'running'
+   * belongs to a previous process instance, so at startup we recover ALL of
+   * them regardless of `locked_at` age. The `{ staleTimeoutMs }` option is
+   * accepted (and ignored) for backward compatibility.
+   *
+   * In the same transaction, the corresponding `runs` rows are synchronized:
+   * jobs with retries remaining are reset to 'pending' in job_queue and 'queued'
+   * in runs table; exhausted jobs are marked 'failed' in both.
+   */
+  recoverStaleJobs({ staleTimeoutMs } = {}) {
+    void staleTimeoutMs; // deprecated — kept for API compatibility
+    const recoverTx = this.db.transaction(() => {
+      // Find ALL jobs that were running when the process died.
       const runningJobs = this.db.prepare(`
         SELECT * FROM job_queue
-        WHERE status = 'running' AND (locked_at IS NULL OR locked_at < ?)
-      `).all(cutoff);
+        WHERE status = 'running'
+      `).all();
+
+      const now = new Date().toISOString();
+      const interruptMessage = 'interrupted by server restart — re-run';
 
       let recovered = 0;
       for (const job of runningJobs) {
-        if (job.attempts < job.max_attempts) {
+        const retry = job.attempts < job.max_attempts;
+        if (retry) {
           this.db.prepare(`
             UPDATE job_queue
             SET status = 'pending', locked_at = NULL, locked_by = NULL, updated_at = CURRENT_TIMESTAMP
@@ -177,6 +201,37 @@ export class JobQueue {
             SET status = 'failed', locked_at = NULL, locked_by = NULL, last_error = 'Interrupted by process restart', updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
           `).run(job.id);
+        }
+
+        // Keep the run row in sync with job_queue in the same transaction
+        const runRow = this.db.prepare('SELECT status, events_json FROM runs WHERE id = ?').get(job.run_id);
+        if (runRow && (runRow.status === 'running' || runRow.status === 'queued')) {
+          let events = [];
+          try {
+            const parsed = JSON.parse(runRow.events_json || '[]');
+            if (Array.isArray(parsed)) events = parsed;
+          } catch { /* keep empty */ }
+          events.push({ message: interruptMessage, timestamp: now });
+
+          if (retry) {
+            this.db.prepare(`
+              UPDATE runs
+              SET status = 'queued',
+                  events_json = ?,
+                  updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(JSON.stringify(events), job.run_id);
+          } else {
+            this.db.prepare(`
+              UPDATE runs
+              SET status = 'failed',
+                  error = ?,
+                  completed_at = ?,
+                  events_json = ?,
+                  updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(interruptMessage, now, JSON.stringify(events), job.run_id);
+          }
         }
       }
       return { totalStale: runningJobs.length, recovered };
@@ -214,7 +269,7 @@ export class JobQueue {
       GROUP BY status
     `).all(this.queueName);
 
-    const stats = { pending: 0, running: 0, completed: 0, failed: 0 };
+    const stats = { pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0 };
     for (const row of rows) {
       if (stats[row.status] !== undefined) {
         stats[row.status] = row.count;

@@ -7,8 +7,21 @@ services:
     image: testflow:latest
     container_name: testflow
     ports:
-      - "8080:8080"
+      # Loopback only — never publish the dashboard on 0.0.0.0 by default.
+      # To reach it from another machine, front it with a reverse proxy that
+      # provides TLS + auth.
+      - "127.0.0.1:8080:8080"
     env_file: .env
+    # Hardening: no privilege escalation from the app process.
+    security_opt:
+      - no-new-privileges:true
+    # Sandboxed Chromium inside Docker needs elevated namespace creation —
+    # Playwright's documented requirement (otherwise browser launches fail
+    # with "Running as root without --no-sandbox is not supported" or
+    # namespace errors). This keeps the Chromium sandbox ENABLED; do NOT
+    # work around it by setting SQA_CHROMIUM_NO_SANDBOX=1.
+    cap_add:
+      - SYS_ADMIN
     volumes:
       - ./data:/app/data   # SQLite database, reports, and screenshots persist here
     restart: unless-stopped

@@ -115,4 +115,52 @@ describe('Unit Tests: Deduplication Logic (No Browser)', () => {
     const fromEvidence = { evidence: 'Target: input#search\nSome other log line\nTarget: span.icon' };
     assert.equal(getNodeSignature(fromEvidence), 'input#search; span.icon');
   });
+
+  it('findings with no selector/target fall back to a hash of title + first 120 chars of evidence', () => {
+    const f1 = { title: 'Broken link on checkout', evidence: 'GET https://example.com/pay returned 500' };
+    const sig1 = getNodeSignature(f1);
+    assert.ok(sig1 && sig1.length > 0, 'signature must never be empty-string anymore');
+
+    // Same title + evidence → same signature (dedups across cells)
+    const f1Clone = { title: 'Broken link on checkout', evidence: 'GET https://example.com/pay returned 500' };
+    assert.equal(getNodeSignature(f1Clone), sig1);
+
+    // Different title → different signature (no false merge)
+    const f2 = { title: 'Different finding entirely', evidence: 'GET https://example.com/pay returned 500' };
+    assert.notEqual(getNodeSignature(f2), sig1);
+
+    // Evidence beyond 120 chars does not change the signature
+    const f3 = { title: 'Broken link on checkout', evidence: `${'x'.repeat(500)}` };
+    const f3Clone = { title: 'Broken link on checkout', evidence: `${'x'.repeat(120)}${'y'.repeat(380)}` };
+    assert.equal(getNodeSignature(f3), getNodeSignature(f3Clone));
+  });
+
+  it('merges two no-selector findings that share title + evidence prefix across cells', () => {
+    const f1 = {
+      ruleId: 'e2e-flow-failed',
+      title: 'Checkout flow failed at step 2',
+      evidence: 'Timeout waiting for .cart',
+      pageUrl: 'https://example.com/checkout',
+      matrixCell: { cellId: 'chromium:desktop:anon' },
+    };
+    const f2 = {
+      ruleId: 'e2e-flow-failed',
+      title: 'Checkout flow failed at step 2',
+      evidence: 'Timeout waiting for .cart',
+      pageUrl: 'https://example.com/checkout',
+      matrixCell: { cellId: 'firefox:mobile:anon' },
+    };
+    const merged = dedupFindings([f1, f2]);
+    assert.equal(merged.length, 1, 'identical no-selector findings must merge');
+    assert.equal(merged[0].occurrences, 2);
+    assert.deepEqual(merged[0].matrixCells.sort(), ['chromium:desktop:anon', 'firefox:mobile:anon'].sort());
+    // affectedPages seeded with the finding's own pageUrl even though the executor passed none
+    assert.deepEqual(merged[0].affectedPages, ['https://example.com/checkout']);
+  });
+
+  it('does NOT merge no-selector findings that have different titles on the same page', () => {
+    const f1 = { ruleId: 'gen', title: 'Issue A', evidence: '', pageUrl: 'https://example.com/x' };
+    const f2 = { ruleId: 'gen', title: 'Issue B', evidence: '', pageUrl: 'https://example.com/x' };
+    assert.equal(dedupFindings([f1, f2]).length, 2);
+  });
 });

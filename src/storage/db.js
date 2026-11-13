@@ -4,12 +4,23 @@
  * Designed with standard ANSI SQL data types (TEXT, REAL, INTEGER) so it
  * can seamlessly migrate to PostgreSQL/Supabase when scaling up.
  * Runs completely locally with zero cost and zero external infrastructure.
+ *
+ * Schema evolution uses `PRAGMA user_version` + an ordered migration list:
+ * fresh databases run the full SCHEMA_SQL (already at the latest shape) and
+ * then fast-forward through the migrations; existing databases get each
+ * migration applied exactly once, in order.
  */
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
+import { config } from '../utils/config.js';
 
-const DEFAULT_DB_PATH = path.join(process.cwd(), 'data', 'testflow.sqlite');
+// Honor config.dataDir (env SQA_DATA_DIR) so the DB lives with the other
+// stores; explicit TESTFLOW_DB_PATH / SQA_DB_PATH still win.
+const DEFAULT_DB_PATH = path.join(
+  path.resolve(config?.dataDir || path.join(process.cwd(), 'data')),
+  'testflow.sqlite'
+);
 
 let _dbInstance = null;
 
@@ -50,6 +61,7 @@ CREATE TABLE IF NOT EXISTS monitors (
   enabled INTEGER NOT NULL DEFAULT 1,
   only_new_findings INTEGER NOT NULL DEFAULT 1,
   webhook_url TEXT,
+  roles TEXT NOT NULL DEFAULT '[]',
   options_json TEXT,
   last_run_at TEXT,
   last_run_id TEXT,
@@ -91,17 +103,143 @@ CREATE TABLE IF NOT EXISTS flaky_history (
   started_at TEXT NOT NULL,
   status TEXT NOT NULL,
   rule_ids_json TEXT NOT NULL,
+  options_key TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
 
 CREATE INDEX IF NOT EXISTS idx_flaky_url ON flaky_history(url);
+
+-- Finding triage states: per-run human review of individual findings
+CREATE TABLE IF NOT EXISTS finding_states (
+  run_id TEXT NOT NULL,
+  rule_id TEXT NOT NULL,
+  page_url TEXT NOT NULL,
+  state TEXT NOT NULL,
+  updated_at TEXT,
+  PRIMARY KEY (run_id, rule_id, page_url)
+);
+
+-- Visual baselines: reference screenshots keyed by monitor + page + viewport + label
+CREATE TABLE IF NOT EXISTS baselines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  monitor_id TEXT,
+  page_url TEXT,
+  viewport TEXT,
+  label TEXT,
+  path TEXT,
+  hash TEXT,
+  created_at TEXT,
+  UNIQUE (monitor_id, page_url, viewport, label)
+);
+
+-- Plan drafts: human-in-the-loop review buffer for AI-authored test plans
+CREATE TABLE IF NOT EXISTS plan_drafts (
+  id TEXT PRIMARY KEY,
+  url TEXT,
+  plan_json TEXT,
+  status TEXT DEFAULT 'draft',
+  created_at TEXT
+);
 `;
+
+/** Read the current `PRAGMA user_version`. */
+export function getSchemaVersion(db) {
+  const row = db.prepare('PRAGMA user_version').get();
+  return row?.user_version ?? 0;
+}
+
+/** List of column names for a table (empty when the table doesn't exist). */
+function tableColumns(db, table) {
+  const exists = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
+  ).get(table);
+  if (!exists) return [];
+  return db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+}
+
+// ─── ordered migrations ──────────────────────────────────────────────
+// Each entry: { version, description, up(db) }. `up` must be idempotent
+// per database (it runs exactly once because user_version advances), but
+// we still guard ALTERs defensively so fresh DBs (whose SCHEMA_SQL already
+// has the final shape) no-op cleanly.
+
+export const MIGRATIONS = [
+  {
+    version: 1,
+    description: 'add runs.plan_json + monitors.roles columns; add finding_states, baselines, plan_drafts, flaky_history.options_key',
+    up(db) {
+      // runs.plan_json (TEXT nullable)
+      const runCols = tableColumns(db, 'runs');
+      if (runCols.length > 0 && !runCols.includes('plan_json')) {
+        db.exec('ALTER TABLE runs ADD COLUMN plan_json TEXT');
+      }
+
+      // monitors.roles (TEXT default '[]')
+      const monitorCols = tableColumns(db, 'monitors');
+      if (monitorCols.length > 0 && !monitorCols.includes('roles')) {
+        db.exec("ALTER TABLE monitors ADD COLUMN roles TEXT NOT NULL DEFAULT '[]'");
+      }
+
+      // flaky_history.options_key — normalized run-options hash used to group
+      // flaky detection so runs with different configs are never compared.
+      const flakyCols = tableColumns(db, 'flaky_history');
+      if (flakyCols.length > 0 && !flakyCols.includes('options_key')) {
+        db.exec("ALTER TABLE flaky_history ADD COLUMN options_key TEXT NOT NULL DEFAULT ''");
+      }
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS finding_states (
+          run_id TEXT NOT NULL,
+          rule_id TEXT NOT NULL,
+          page_url TEXT NOT NULL,
+          state TEXT NOT NULL,
+          updated_at TEXT,
+          PRIMARY KEY (run_id, rule_id, page_url)
+        );
+
+        CREATE TABLE IF NOT EXISTS baselines (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          monitor_id TEXT,
+          page_url TEXT,
+          viewport TEXT,
+          label TEXT,
+          path TEXT,
+          hash TEXT,
+          created_at TEXT,
+          UNIQUE (monitor_id, page_url, viewport, label)
+        );
+
+        CREATE TABLE IF NOT EXISTS plan_drafts (
+          id TEXT PRIMARY KEY,
+          url TEXT,
+          plan_json TEXT,
+          status TEXT DEFAULT 'draft',
+          created_at TEXT
+        );
+      `);
+    },
+  },
+];
 
 /**
  * Initialize schema on the provided database instance.
+ * Applies the base schema, then any pending migrations in order.
  */
 export function initSchema(db) {
   db.exec(SCHEMA_SQL);
+
+  const current = getSchemaVersion(db);
+  let applied = 0;
+  for (const migration of MIGRATIONS) {
+    if (migration.version <= current) continue;
+    const applyTx = db.transaction(() => {
+      migration.up(db);
+      db.prepare(`PRAGMA user_version = ${migration.version}`).run();
+    });
+    applyTx();
+    applied++;
+  }
+  return { applied };
 }
 
 /**

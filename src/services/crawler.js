@@ -1,8 +1,10 @@
 import { chromium } from 'playwright';
-import { validateUrl } from './ssrf.js';
+import * as ssrf from './ssrf.js';
 import { config } from '../utils/config.js';
 import { info, warn, error as logError } from '../utils/logger.js';
 import { canonicalizeUrl, stripTrackingParams } from '../utils/classify.js';
+import { getSharedEgressProxy, stopSharedEgressProxy } from '../security/egressProxy.js';
+import { waitForPageReady } from '../utils/pageReady.js';
 
 // Headers that may carry secrets. We keep the *presence* of the header so
 // contract tests can verify it's set, but never persist its value.
@@ -10,6 +12,13 @@ const SENSITIVE_HEADER_RE = /^(authorization|cookie|set-cookie|x-api-key|x-auth-
 
 // Cap sampled bodies so a huge response payload doesn't blow up the run JSON.
 const MAX_BODY_SAMPLE_CHARS = 5000;
+
+// Hard cap on raw response bodies before parsing — 256 KB. Anything larger
+// is recorded as truncated instead of being read into memory.
+const MAX_RAW_BODY_CHARS = 256 * 1024;
+
+// Max XHR/fetch captures persisted per page — beyond this we keep a marker.
+const MAX_API_CALLS_PER_PAGE = 200;
 
 function redactHeaders(headers = {}) {
   const out = {};
@@ -30,6 +39,27 @@ function tryParseBody(text) {
 }
 
 /**
+ * Read a response body under a hard size cap. Honors content-length when the
+ * server provides it (skipping the read entirely for oversized payloads),
+ * otherwise reads and slices to MAX_RAW_BODY_CHARS before any parsing.
+ *
+ * @returns {Promise<{ text: string|null, truncated: boolean }>}
+ */
+async function readBodyCapped(response) {
+  const headers = response.headers();
+  const contentLength = parseInt(headers['content-length'], 10);
+  if (Number.isFinite(contentLength) && contentLength > MAX_RAW_BODY_CHARS) {
+    // Server told us up front — don't pull 100 MB into the run JSON.
+    return { text: null, truncated: true };
+  }
+  const bodyText = await response.text();
+  if (typeof bodyText === 'string' && bodyText.length > MAX_RAW_BODY_CHARS) {
+    return { text: bodyText.slice(0, MAX_RAW_BODY_CHARS), truncated: true };
+  }
+  return { text: bodyText, truncated: false };
+}
+
+/**
  * Capture a single XHR/fetch request/response pair as a structured record.
  * Used by the new API-contract executor (Phase 1) and the JSON report export.
  */
@@ -41,15 +71,17 @@ async function captureApiCall(response) {
   let requestBody = null;
   try {
     const postData = request.postData();
-    if (postData) requestBody = tryParseBody(postData);
+    if (postData) requestBody = tryParseBody(postData.slice(0, MAX_RAW_BODY_CHARS));
   } catch { /* ignore */ }
 
   let responseBody = null;
   let responseContentType = null;
+  let truncated = false;
   try {
     responseContentType = response.headers()['content-type'] || null;
-    const bodyText = await response.text();
-    responseBody = tryParseBody(bodyText);
+    const body = await readBodyCapped(response);
+    truncated = body.truncated;
+    responseBody = body.truncated && body.text == null ? null : tryParseBody(body.text);
   } catch { /* some responses (e.g. redirected navigations) cannot be re-read */ }
 
   return {
@@ -64,16 +96,72 @@ async function captureApiCall(response) {
     responseContentType,
     isNavigation: request.isNavigationRequest(),
     initiator: request.frame() === response.frame() ? 'main-frame' : 'subframe',
+    ...(truncated ? { truncated: true } : {}),
     // Captured at response time — useful for waterfall analysis later
     timestamp: new Date().toISOString(),
   };
 }
 
+/**
+ * Chromium launch args honoring config.chromiumNoSandbox (default: sandboxed —
+ * set SQA_CHROMIUM_NO_SANDBOX=true only if your container genuinely cannot run
+ * sandboxed Chromium) and an optional
+ * SSRF-pinned host-resolver rule for this run.
+ */
+export function chromiumLaunchArgs({ hostResolverRules, hasProxy } = {}) {
+  const args = ['--disable-setuid-sandbox', '--disable-dev-shm-usage'];
+  if (config?.chromiumNoSandbox !== false) {
+    args.unshift('--no-sandbox');
+  }
+  if (hostResolverRules) {
+    args.push(`--host-resolver-rules=${hostResolverRules}`);
+  }
+  if (hasProxy) {
+    args.push('--proxy-bypass-list=<-loopback>');
+  }
+  return args;
+}
+
+/**
+ * Resolve + pin a URL for SSRF defense when ssrf.resolveAndPin has landed.
+ * Returns the resolver `rules` string, or null when unavailable/pinning fails.
+ */
+export async function resolvePinRulesSafe(url) {
+  try {
+    // ssrf.resolveAndPin is being added incrementally — guard until it lands.
+    if (typeof ssrf.resolveAndPin === 'function') {
+      const pinned = await ssrf.resolveAndPin(url);
+      return pinned?.rules || null;
+    }
+  } catch (err) {
+    warn(`resolveAndPin failed for ${url}: ${err.message}`);
+  }
+  return null;
+}
+
 export async function crawlSite({ url, options, onEvent, signal }) {
-  const { maxPages = 10, maxDepth = 2, storageState = null } = options || {};
+  const {
+    maxPages = 10,
+    maxDepth = 2,
+    storageState = null,
+    hostResolverRules = null,
+    settleMs = 2500,
+  } = options || {};
+
+  let egressProxy = null;
+  let proxyConfig = options?.proxy;
+  if (!proxyConfig && !config.allowPrivateTargets && options?.allowPrivateTargets !== true) {
+    egressProxy = await getSharedEgressProxy();
+    proxyConfig = { server: egressProxy.proxyUrl };
+  }
 
   const browser = await chromium.launch({
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    args: chromiumLaunchArgs({
+      // Reuse the run-level pin when provided; otherwise pin our own.
+      hostResolverRules: hostResolverRules || await resolvePinRulesSafe(url),
+      hasProxy: !!proxyConfig,
+    }),
+    ...(proxyConfig ? { proxy: proxyConfig } : {}),
   });
 
   let context;
@@ -86,24 +174,40 @@ export async function crawlSite({ url, options, onEvent, signal }) {
       // authenticated app.
       ...(storageState ? { storageState } : {}),
     });
-    
+
+    if (!config.allowPrivateTargets && options?.allowPrivateTargets !== true) {
+      await context.route('**', async (route) => {
+        const reqUrl = route.request().url();
+        if (/^(data|blob|about):/i.test(reqUrl)) {
+          return route.continue();
+        }
+        try {
+          await ssrf.validateUrl(reqUrl);
+          route.continue();
+        } catch {
+          route.abort('blockedbyclient');
+        }
+      });
+    }
+
     const parsedStartUrl = new URL(url);
     const origin = parsedStartUrl.origin;
-    
+
     const visited = new Set();
     const queued = new Set();
     const pages = [];
+    const crawlErrors = [];
     let dedupCount = 0;
-    
+
     const startCanonical = canonicalizeUrl(url);
     const queue = [{ url, canonicalUrl: startCanonical, depth: 0 }];
     queued.add(startCanonical);
-    
+
     const isIgnoredExtension = (u) => {
       try {
         const p = new URL(u).pathname.toLowerCase();
         const extensions = [
-          '.pdf', '.zip', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', 
+          '.pdf', '.zip', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
           '.mp3', '.mp4', '.avi', '.mov', '.exe', '.dmg',
           '.csv', '.xml', '.json', '.txt', '.rss', '.atom'
         ];
@@ -133,32 +237,33 @@ export async function crawlSite({ url, options, onEvent, signal }) {
         info('Crawl aborted by signal');
         break;
       }
-      
+
       if (visited.size >= maxPages) break;
-      
+
       const current = queue.shift();
       const currentUrl = current.url;
       const normalizedCurrent = current.canonicalUrl || canonicalizeUrl(currentUrl);
-      
+
       if (visited.has(normalizedCurrent)) {
         continue;
       }
       if (current.depth > maxDepth) continue;
-      
+
       try {
-        await validateUrl(currentUrl);
+        await ssrf.validateUrl(currentUrl);
       } catch (ssrfErr) {
         warn(`URL failed SSRF validation: ${currentUrl} - ${ssrfErr.message}`);
+        crawlErrors.push({ url: currentUrl, error: `SSRF validation failed: ${ssrfErr.message}` });
         continue;
       }
-      
+
       visited.add(normalizedCurrent);
-      
+
       if (onEvent) onEvent(`Crawling ${new URL(currentUrl).pathname || '/'}`);
-      
+
       const page = await context.newPage();
-      
-      const consoleLogs = [];
+      try {
+        const consoleLogs = [];
       page.on('console', msg => {
         if (msg.type() === 'error' || msg.type() === 'warning') {
           consoleLogs.push({ type: msg.type(), text: msg.text(), url: currentUrl, location: msg.location() });
@@ -171,7 +276,7 @@ export async function crawlSite({ url, options, onEvent, signal }) {
           url: currentUrl
         });
       });
-      
+
       const networkFailures = [];
       page.on('requestfailed', request => {
         networkFailures.push({
@@ -183,9 +288,10 @@ export async function crawlSite({ url, options, onEvent, signal }) {
           initiator: request.frame() === page.mainFrame() ? 'main-frame' : 'subframe'
         });
       });
-      
+
       const networkErrors = [];
       const apiCalls = [];
+      let apiCallsTruncated = false;
       page.on('response', async response => {
         // Existing 4xx+ capture (kept for backward compatibility)
         if (response.status() >= 400) {
@@ -200,36 +306,77 @@ export async function crawlSite({ url, options, onEvent, signal }) {
         }
 
         // New: capture all XHR/fetch traffic for the API-contract executor.
+        // Hard cap per page — SPA traffic can be thousands of calls; beyond
+        // MAX_API_CALLS_PER_PAGE we keep a truncated marker instead of data.
+        if (apiCalls.length >= MAX_API_CALLS_PER_PAGE) {
+          if (!apiCallsTruncated) {
+            apiCallsTruncated = true;
+            apiCalls.push({
+              truncated: true,
+              note: `api call capture capped at ${MAX_API_CALLS_PER_PAGE} for this page — further calls dropped`,
+            });
+          }
+          return;
+        }
         // captureApiCall is async (reads response body) so we fire-and-forget
         // and push the resolved record into apiCalls. Ordering is best-effort
         // by completion, which is fine for downstream contract inference.
         const captured = captureApiCall(response);
         if (captured) {
           captured
-            .then(rec => { if (rec) apiCalls.push(rec); })
+            .then(rec => {
+              if (!rec) return;
+              if (apiCalls.length >= MAX_API_CALLS_PER_PAGE) {
+                if (!apiCallsTruncated) {
+                  apiCallsTruncated = true;
+                  apiCalls.push({
+                    truncated: true,
+                    note: `api call capture capped at ${MAX_API_CALLS_PER_PAGE} for this page — further calls dropped`,
+                  });
+                }
+                return;
+              }
+              apiCalls.push(rec);
+            })
             .catch(() => { /* swallow — body reads can race with navigation */ });
         }
       });
-      
+
+      const startTime = Date.now();
+      const response = await page.goto(currentUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: config?.pageTimeoutMs || 30000
+      });
+
+      // Smart readiness settle: replaces arbitrary sleeps with dynamic checks
+      // for networkidle, loading indicators, and running animations.
+      await waitForPageReady(page, {
+        networkIdleTimeoutMs: Math.min(Math.max(Number(settleMs) || 1500, 0), 3000),
+        onEvent,
+      });
+
+      const loadTime = Date.now() - startTime;
+
+      const finalUrl = page.url();
       try {
-        const startTime = Date.now();
-        const response = await page.goto(currentUrl, { 
-          waitUntil: 'domcontentloaded', 
-          timeout: config?.pageTimeoutMs || 30000 
-        });
-        const loadTime = Date.now() - startTime;
-        
-        const finalUrl = page.url();
-        try {
-          await validateUrl(finalUrl);
-        } catch (ssrfErr) {
-          warn(`Final redirected URL failed SSRF validation: ${finalUrl}`);
-          await page.close();
-          continue;
-        }
-        
+        await ssrf.validateUrl(finalUrl);
+      } catch (ssrfErr) {
+        warn(`Final redirected URL failed SSRF validation: ${finalUrl}`);
+        continue;
+      }
+
         const status = response ? response.status() : null;
-        
+
+        // Capture AI-friendly accessibility tree snapshot (Phase 2)
+        let ariaSnapshot = null;
+        if (config?.useAriaSnapshot !== false && typeof page.ariaSnapshot === 'function') {
+          try {
+            ariaSnapshot = await page.ariaSnapshot({ mode: 'ai', timeout: 2000 });
+          } catch {
+            ariaSnapshot = null;
+          }
+        }
+
         const pageData = await page.evaluate(() => {
           const links = [...document.querySelectorAll('a[href]')].map(a => a.href);
           const images = [...document.querySelectorAll('img')].map((img, index) => {
@@ -244,6 +391,27 @@ export async function crawlSite({ url, options, onEvent, signal }) {
             };
           });
           const semanticH1 = [...document.querySelectorAll('[role="heading"][aria-level="1"]')].map(el => el.textContent?.trim()).filter(Boolean);
+          const inputDetails = [...document.querySelectorAll('input, textarea, select')]
+            .map((input, index) => {
+              const tag = input.tagName.toLowerCase();
+              const type = tag === 'input' ? (input.getAttribute('type') || 'text').toLowerCase() : tag;
+              const form = input.closest('form');
+              const formIndex = form ? [...document.querySelectorAll('form')].indexOf(form) + 1 : null;
+              const tagIndex = [...document.querySelectorAll(tag)].indexOf(input) + 1;
+              const selector = input.id
+                ? `#${CSS.escape(input.id)}`
+                : input.getAttribute('name')
+                  ? `${tag}[name="${CSS.escape(input.getAttribute('name'))}"]`
+                  : `${tag}:nth-of-type(${tagIndex})`;
+              return {
+                selector,
+                formSelector: form ? (form.id ? `form#${CSS.escape(form.id)}` : `form:nth-of-type(${formIndex})`) : null,
+                tag,
+                type,
+                disabled: input.disabled,
+              };
+            })
+            .filter(input => !input.disabled);
           return {
             title: document.title,
             links,
@@ -251,6 +419,7 @@ export async function crawlSite({ url, options, onEvent, signal }) {
             forms: document.querySelectorAll('form').length,
             buttons: document.querySelectorAll('button, [role="button"], input[type="submit"]').length,
             inputs: document.querySelectorAll('input, textarea, select').length,
+            inputDetails,
             metaDescription: document.querySelector('meta[name="description"]')?.content || null,
             h1: document.querySelector('h1')?.textContent?.trim() || null,
             semanticH1,
@@ -259,7 +428,7 @@ export async function crawlSite({ url, options, onEvent, signal }) {
             doctype: !!document.doctype,
           };
         });
-        
+
         const internalLinks = pageData.links.filter(l => {
           if (isIgnoredProtocol(l)) return false;
           try {
@@ -273,7 +442,7 @@ export async function crawlSite({ url, options, onEvent, signal }) {
             return false;
           }
         });
-        
+
         internalLinks.forEach(l => {
           try {
             const u = new URL(l, finalUrl);
@@ -288,11 +457,12 @@ export async function crawlSite({ url, options, onEvent, signal }) {
             // ignore invalid urls
           }
         });
-        
+
         const pageResult = {
           url: currentUrl,
           status,
           title: pageData.title,
+          ariaSnapshot,
           loadTime,
           links: pageData.links,
           images: pageData.images.map(i => i.src),
@@ -300,6 +470,7 @@ export async function crawlSite({ url, options, onEvent, signal }) {
           forms: pageData.forms,
           buttons: pageData.buttons,
           inputs: pageData.inputs,
+          inputDetails: pageData.inputDetails,
           meta: {
             metaDescription: pageData.metaDescription,
             h1: pageData.h1,
@@ -314,27 +485,31 @@ export async function crawlSite({ url, options, onEvent, signal }) {
           networkErrors,
           // NEW — captured XHR/fetch traffic, redacted + bounded
           apiCalls,
-          page
+          ...(apiCallsTruncated ? { apiCallsTruncated: true } : {}),
         };
-        
+
         pages.push(pageResult);
-        
+
       } catch (err) {
         logError(`Failed to crawl ${currentUrl}`, err);
+        crawlErrors.push({ url: currentUrl, error: err.message || String(err) });
+      } finally {
         await page.close().catch(() => {});
       }
     }
-    
+
     info(`Crawling finished. Deduplicated ${dedupCount} URLs.`);
-    
-    return { pages, browser, context, siteOrigin: origin };
-    
+
+    return { pages, browser, context, siteOrigin: origin, errors: crawlErrors, egressProxy };
+
   } catch (err) {
     if (browser) await browser.close().catch(() => {});
+    if (egressProxy) await stopSharedEgressProxy().catch(() => {});
     throw err;
   }
 }
 
-export async function closeCrawlSession(browser) {
+export async function closeCrawlSession(browser, egressProxy) {
   if (browser) await browser.close().catch(() => {});
+  await stopSharedEgressProxy().catch(() => {});
 }

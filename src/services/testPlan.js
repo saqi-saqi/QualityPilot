@@ -36,7 +36,7 @@ const AuthContext = z.object({
   type: z.enum(['none', 'cookie', 'bearer', 'basic', 'custom']),
   // For 'cookie' / 'bearer' / 'basic' — secret name only, never the value.
   // Executors resolve the secret from env / vault at runtime.
-  secretRef: z.string().optional(),
+  secretRef: z.string().regex(/^SQA_TD_[A-Z0-9_]+$/).optional(),
   cookieName: z.string().optional(),
   headerName: z.string().optional(),
   loginFlow: z.string().optional(),   // reference to a Flow.name to run first
@@ -105,6 +105,19 @@ const FlowStep = z.union([
     action: z.literal('assertStatus'),
     status: z.number().int().min(100).max(599),
   }).strict(),
+  // Direct API call executed inside a flow — no browser interaction needed.
+  // The URL must pass SSRF validation at run start (same rules as the rest
+  // of the plan). Responses can be asserted and saved into run variables.
+  z.object({
+    action: z.literal('api-request'),
+    method: HttpMethod,
+    url: z.string().url(),
+    headers: z.record(z.string(), z.string()).optional(),
+    body: z.string().optional(),
+    expectStatus: z.number().int().min(100).max(599).optional(),
+    expectJsonPath: z.string().optional(),
+    saveAsVar: z.string().optional(),
+  }).strict(),
 ]);
 
 const Flow = z.object({
@@ -114,6 +127,11 @@ const Flow = z.object({
   steps: z.array(FlowStep).min(1),
   auth: AuthContext.optional(),
   viewport: Viewport.optional(),
+  // Allow steps to leave the run target's origin (default: same-origin only).
+  allowCrossOrigin: z.boolean().optional(),
+  // Set by the flowInferrer when a flow looks too risky/ambiguous to run
+  // unattended — surfaces in the review UI. The schema accepts both keys.
+  needsReview: z.boolean().optional(),
   retry: z.object({
     maxAttempts: z.number().int().min(1).max(5).default(2),
     backoffMs: z.number().int().positive().max(10000).default(500),
@@ -132,7 +150,10 @@ const JsonSchema = z.union([
 const ApiEndpoint = z.object({
   method: HttpMethod,
   path: z.string().min(1),                          // e.g. '/api/users/:id'
-  baseUrl: z.string().url().optional(),             // override run target
+  // Optional absolute base — MUST be same-origin with the run target
+  // (enforced by the plan-level refinement below). Cross-origin overrides
+  // are rejected: an endpoint may never point the probe at another host.
+  baseUrl: z.string().url().optional(),
   expectedStatus: z.number().int().min(100).max(599).optional(),
   requestSchema: JsonSchema.nullish(),              // null | undefined | object | array
   responseSchema: JsonSchema.nullish(),
@@ -146,6 +167,8 @@ const ApiEndpoint = z.object({
   // A replay reproducing one of these means the site behaves as before —
   // the expectation was wrong, not the site.
   observedStatuses: z.array(z.number().int().min(100).max(599)).optional(),
+  // Latency budget for this endpoint (ms) — findings when exceeded.
+  latencyBudgetMs: z.number().int().positive().optional(),
   // Path params / query params / body — concrete values to send during the contract probe.
   pathParams: z.record(z.string(), z.string()).default({}),
   queryParams: z.record(z.string(), z.string()).default({}),
@@ -173,6 +196,7 @@ const FuzzTarget = z.object({
   pageUrl: z.string().url().optional(),
   formSelector: z.string().min(1).optional(),
   fieldSelector: z.string().min(1).optional(),
+  submitSelector: z.string().min(1).optional(),
 
   // For API fuzzing
   apiEndpointRef: z.string().min(1).optional(),   // matches ApiEndpoint.path or label
@@ -216,7 +240,7 @@ const VisualBaseline = z.object({
 
 // ─── top-level plan ───────────────────────────────────────────────────
 
-export const TestPlan = z.object({
+const TestPlanObject = z.object({
   schemaVersion: z.literal(1),
   id: z.string().min(1),                            // UUID
   targetUrl: z.string().url(),
@@ -239,13 +263,48 @@ export const TestPlan = z.object({
   viewports: z.array(Viewport).default([]),         // matrix
   browsers: z.array(z.enum(['chromium', 'firefox', 'webkit'])).default(['chromium']),
   executors: z.array(z.string()).default([]),       // names from executorRegistry
+
+  // Execution toggles
+  perfThrottle: z.boolean().optional(),             // run perf cells under throttled network
+  bypassCsp: z.boolean().optional(),                // disable CSP in scanned pages (default true at launch)
 }).strict();
+
+// ApiEndpoint baseUrl (when present) must be same-origin with the run
+// target — the plan may never redirect a contract probe at another host.
+export const TestPlan = TestPlanObject.superRefine((plan, ctx) => {
+  let targetOrigin;
+  try {
+    targetOrigin = new URL(plan.targetUrl).origin;
+  } catch {
+    return; // invalid targetUrl already flagged by the field schema
+  }
+  (plan.apiEndpoints || []).forEach((endpoint, i) => {
+    if (!endpoint.baseUrl) return;
+    try {
+      if (new URL(endpoint.baseUrl).origin !== targetOrigin) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['apiEndpoints', i, 'baseUrl'],
+          message: `ApiEndpoint baseUrl must be same-origin with the run target (${targetOrigin}) — cross-origin overrides are not allowed`,
+        });
+      }
+    } catch {
+      // invalid URL already flagged by the field schema
+    }
+  });
+});
+
+// superRefine wraps the object in ZodEffects (which drops `.shape`) — the
+// explorer inferrers extract element schemas via TestPlan.shape.*, so we
+// re-expose the underlying object's shape here.
+TestPlan.shape = TestPlanObject.shape;
 
 // Convenience exports
 export const TestPlanStatus = TestPlan.shape.status;
 export const HttpMethodEnum = HttpMethod;
 export const ViewportSchema = Viewport;
 export const AuthContextSchema = AuthContext;
+export const FlowSchema = Flow;
 
 // Element schema extractor — peels ZodDefault / ZodOptional / ZodNullable
 // wrappers off a ZodArray to get the inner element schema.
@@ -317,4 +376,14 @@ export function createDraftPlan(id, targetUrl) {
     targetUrl,
     status: 'draft',
   });
+}
+
+/**
+ * Compose the absolute URL an ApiEndpoint will be probed at.
+ * Uses endpoint.baseUrl when set (same-origin with the run target — enforced
+ * by the schema), otherwise resolves the path against the run target.
+ */
+export function composeEndpointUrl(endpoint, targetUrl) {
+  const base = endpoint.baseUrl || targetUrl;
+  return new URL(endpoint.path, base).toString();
 }

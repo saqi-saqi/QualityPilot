@@ -10,7 +10,8 @@
  *   {
  *     id:              string  — short unique slug
  *     label:           string  — human name (client/site)
- *     url:             string  — site to scan
+ *     url:             string  — site to scan (http/https only, SSRF-checked)
+ *     roles:           string[] — session roles to record/scan (default [])
  *     options:         object  — run options (maxPages, maxDepth, executors…)
  *     intervalHours:   number  — how often to run (min 1)
  *     enabled:         boolean
@@ -28,6 +29,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { SqliteMonitorStore } from '../storage/monitorStore.js';
+import { validateUrl } from './ssrf.js';
+import { config } from '../utils/config.js';
 
 const RUN_OPTIONS_SCHEMA = z.object({
   maxPages: z.number().int().min(1).max(100).optional(),
@@ -43,7 +46,18 @@ const RUN_OPTIONS_SCHEMA = z.object({
 export const MonitorSchema = z.object({
   id: z.string().min(1).max(64).regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/),
   label: z.string().min(1).max(120),
-  url: z.string().url(),
+  // http/https only — a monitor must never point the recording/scan browsers
+  // at file://, ftp:// or other schemes. (DNS/SSRF checks run in add()/update().)
+  url: z.string().url().refine((u) => {
+    try {
+      const parsed = new URL(u);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }, { message: 'url must use the http or https scheme' }),
+  // Session roles recorded/used for this monitor (e.g. ['default', 'admin']).
+  roles: z.array(z.string().regex(/^[a-zA-Z0-9_-]{1,32}$/)).default([]),
   options: RUN_OPTIONS_SCHEMA.default({}),
   intervalHours: z.number().min(1).max(24 * 30).default(24),
   enabled: z.boolean().default(true),
@@ -80,11 +94,14 @@ export function nextRunAt(monitor) {
 // ─── store ───────────────────────────────────────────────────────────
 
 export class MonitorStore {
-  constructor(dataDir = path.join(process.cwd(), 'data'), { useSqlite, db } = {}) {
-    this.filePath = path.join(dataDir, 'monitors.json');
+  constructor(dataDir, { useSqlite, db } = {}) {
+    // Honor config.dataDir (env SQA_DATA_DIR); the SQLite-vs-JSON heuristic
+    // compares resolved paths so a custom SQA_DATA_DIR still gets SQLite.
+    const resolvedDataDir = path.resolve(dataDir || config?.dataDir || path.join(process.cwd(), 'data'));
+    this.filePath = path.join(resolvedDataDir, 'monitors.json');
     this._monitors = null;
-    const defaultDataDir = path.join(process.cwd(), 'data');
-    this.useSqlite = useSqlite ?? (dataDir === defaultDataDir || dataDir === './data');
+    const defaultDataDir = path.resolve(config?.dataDir || path.join(process.cwd(), 'data'));
+    this.useSqlite = useSqlite ?? (resolvedDataDir === defaultDataDir || resolvedDataDir === path.resolve('./data'));
     if (this.useSqlite) {
       try {
         this._sqliteStore = new SqliteMonitorStore({ db });
@@ -130,14 +147,33 @@ export class MonitorStore {
     return monitors.find(m => m.id === id) || null;
   }
 
+  /**
+   * SSRF gate — a monitor URL must resolve to a scannable http(s) target
+   * BEFORE it is persisted, so a crafted monitor can never point the
+   * recording/scan browsers at private ranges or file://-style resources.
+   * The ssrf error message is surfaced verbatim.
+   */
+  async _assertScannableUrl(url) {
+    try {
+      await validateUrl(url);
+    } catch (err) {
+      return `url: ${err.message}`;
+    }
+    return null;
+  }
+
   /** Validate + add. Returns { ok, monitor } | { ok:false, error }. */
   async add(input) {
-    if (this.useSqlite && this._sqliteStore) {
-      return this._sqliteStore.add(input);
-    }
     const parsed = MonitorSchema.safeParse(input);
     if (!parsed.success) {
       return { ok: false, error: parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ') };
+    }
+    const urlError = await this._assertScannableUrl(parsed.data.url);
+    if (urlError) {
+      return { ok: false, error: urlError };
+    }
+    if (this.useSqlite && this._sqliteStore) {
+      return this._sqliteStore.add(input);
     }
     const monitors = await this._load();
     if (monitors.some(m => m.id === parsed.data.id)) {
@@ -161,6 +197,14 @@ export class MonitorStore {
 
   /** Merge a partial update (usually state fields) into a monitor. */
   async update(id, patch) {
+    // A monitor URL is also settable through update — same SSRF gate as add().
+    // Throws so HTTP callers surface a 400 with the ssrf error message.
+    if (patch && typeof patch.url === 'string' && patch.url) {
+      const urlError = await this._assertScannableUrl(patch.url);
+      if (urlError) {
+        throw new Error(urlError);
+      }
+    }
     if (this.useSqlite && this._sqliteStore) {
       return this._sqliteStore.update(id, patch);
     }

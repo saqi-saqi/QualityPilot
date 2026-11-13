@@ -122,63 +122,163 @@ export async function fuzzApiField(target, value, ctx) {
   }
 }
 
+/**
+ * Exercise a browser form field with a single mutated value. By default this
+ * never submits the form, so it can detect client-side crashes without
+ * changing server data. Submission is available only for explicitly
+ * authorized active scans and an explicitly supplied submit selector.
+ */
+export async function fuzzFormField(target, value, ctx) {
+  if (!ctx.context) return { status: null, threw: false, skipped: true, reason: 'no-browser-context' };
+
+  const page = await ctx.context.newPage();
+  const pageErrors = [];
+  const consoleErrors = [];
+  let responseStatus = null;
+
+  try {
+    const initialResponse = await page.goto(target.pageUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: ctx.options?.timeout ?? 10000,
+    });
+    if (initialResponse?.status) responseStatus = initialResponse.status();
+
+    if (typeof page.on === 'function') {
+      page.on('pageerror', error => pageErrors.push(error?.message || String(error)));
+      page.on('console', message => {
+        if (message?.type?.() === 'error') consoleErrors.push(message.text?.() || 'Console error');
+      });
+      page.on('response', response => {
+        try {
+          if (response.request?.().isNavigationRequest?.() || response.status() >= 500) {
+            responseStatus = response.status();
+          }
+        } catch {}
+      });
+    }
+
+    const baseLocator = page.locator(target.fieldSelector);
+    const locator = typeof baseLocator.first === 'function' ? baseLocator.first() : baseLocator;
+    if (typeof locator.fill !== 'function') {
+      return { status: responseStatus, threw: false, skipped: true, reason: 'field-not-fillable' };
+    }
+    await locator.fill(value, { timeout: ctx.options?.timeout ?? 10000 });
+
+    if (ctx.options?.allowActiveFuzz && target.submitSelector) {
+      await page.locator(target.submitSelector).click({ timeout: ctx.options?.timeout ?? 10000 });
+      if (typeof page.waitForLoadState === 'function') {
+        await page.waitForLoadState('domcontentloaded', { timeout: ctx.options?.timeout ?? 10000 }).catch(() => {});
+      }
+    }
+
+    if (pageErrors.length || consoleErrors.length) {
+      return {
+        status: responseStatus,
+        threw: true,
+        error: [...pageErrors, ...consoleErrors].join('\n'),
+      };
+    }
+    return { status: responseStatus, threw: false };
+  } catch (error) {
+    if (/locator|selector|element.*not found/i.test(error?.message || '')) {
+      return { status: responseStatus, threw: false, skipped: true, reason: 'selector-not-found' };
+    }
+    return { status: responseStatus, threw: true, error: error?.message || String(error) };
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
 // ─── main executor ───────────────────────────────────────────────────
 
 export default async function fuzzExecutor(ctx) {
   const targets = ctx.plan?.fuzzTargets || [];
   const findings = [];
 
-  ctx.onEvent?.(`Fuzzing ${targets.length} targets`);
+  const activeFuzzAllowed = ctx.options?.allowActiveFuzz === true;
+  const delayMs = ctx.options?.delayMs ?? 100; // polite pacing between requests
+  const stats = { targetsRun: 0, totalInputs: 0, skippedActiveTargets: 0, skippedInputs: 0, rateLimitedTargets: 0 };
+  ctx.onEvent?.(`Fuzzing ${targets.length} targets${activeFuzzAllowed ? ' (authorized active mode)' : ' (safe mode)'}`);
 
   for (const target of targets) {
     if (ctx.signal?.aborted) break;
 
     const inputs = generateInputs(target);
-    let failures = 0;
+    const isApiTarget = Boolean(target.apiEndpointRef);
+    if (isApiTarget && !activeFuzzAllowed) {
+      stats.skippedActiveTargets++;
+      ctx.onEvent?.(`Skipping API fuzz target ${target.apiEndpointRef}.${target.field}: active testing requires authorization`);
+      continue;
+    }
 
-    for (const input of inputs) {
+    stats.targetsRun++;
+    stats.totalInputs += inputs.length;
+    let failures = 0;
+    let rateLimited = false;
+
+    for (let i = 0; i < inputs.length; i++) {
       if (ctx.signal?.aborted) break;
 
       let result;
-      if (target.apiEndpointRef) {
-        result = await fuzzApiField(target, input.value, ctx);
+      if (isApiTarget) {
+        result = await fuzzApiField(target, inputs[i].value, ctx);
       } else {
-        // Page-form fuzz requires Playwright — skip if no context
-        if (!ctx.context) {
-          ctx.onEvent?.(`Skipping form fuzz target (no Playwright context): ${target.fieldSelector}`);
-          break;
-        }
-        // Phase 2.5 will implement Playwright-driven form fuzz
+        result = await fuzzFormField(target, inputs[i].value, ctx);
+      }
+
+      if (result.skipped) {
+        stats.skippedInputs++;
         continue;
       }
 
-      if (result.skipped) continue;
+      // Respect 429/503 — the target is telling us to back off. Never hammer:
+      // skip the remaining iterations for this target and record it honestly.
+      if (result.status === 429 || result.status === 503) {
+        rateLimited = true;
+        stats.rateLimitedTargets++;
+        ctx.onEvent?.(`rate limited — backing off (target ${target.apiEndpointRef || target.fieldSelector} returned ${result.status}; skipping remaining ${inputs.length - i - 1} iteration(s))`);
+        break;
+      }
 
       const acceptable = isAcceptableOutcome(result.status, result.threw, target.expectStatus);
       if (!acceptable) {
         failures++;
+        const targetRef = target.apiEndpointRef
+          ? `${target.apiEndpointRef}.${target.field}`
+          : `${target.pageUrl} ${target.fieldSelector}`;
         findings.push(ctx.createFinding({
-          title: `Fuzz: ${target.apiEndpointRef}.${target.field} (${input.generator}) caused ${result.threw ? 'crash' : `HTTP ${result.status}`}`,
+          title: `Fuzz: ${targetRef} (${inputs[i].generator}) caused ${result.threw ? 'crash' : `HTTP ${result.status}`}`,
           severity: result.threw || (result.status && result.status >= 500) ? 'high' : 'medium',
           confidence: 'confirmed',
           category: 'network',
           findingType: 'bug',
           origin: 'first-party',
           ruleId: 'fuzz-failure',
-          pageUrl: target.apiEndpointRef,
-          description: `Endpoint ${target.apiEndpointRef} field "${target.field}" failed when given value from generator "${input.generator}".`,
-          evidence: `Generator: ${input.generator}\nValue: ${input.value.slice(0, 200)}\nStatus: ${result.status ?? 'n/a'}\nError: ${result.error || 'n/a'}`,
+          pageUrl: target.pageUrl || target.apiEndpointRef,
+          description: target.apiEndpointRef
+            ? `Endpoint ${target.apiEndpointRef} field "${target.field}" failed when given value from generator "${inputs[i].generator}".`
+            : `Form field "${target.fieldSelector}" on ${target.pageUrl} failed when given value from generator "${inputs[i].generator}".`,
+          evidence: `Generator: ${inputs[i].generator}\nValue: ${inputs[i].value.slice(0, 200)}\nStatus: ${result.status ?? 'n/a'}\nError: ${result.error || 'n/a'}`,
           suggestedFix: 'Validate + sanitize the field on the server side. Reject malformed input with 400 instead of crashing or returning 5xx.',
         }));
       }
+
+      // Polite pacing between requests (configurable via options.delayMs).
+      if (i < inputs.length - 1 && delayMs > 0 && !ctx.signal?.aborted) {
+        await new Promise(r => setTimeout(r, delayMs));
+      }
     }
 
-    ctx.onEvent?.(`Fuzz target ${target.apiEndpointRef || target.fieldSelector}: ${failures}/${inputs.length} failures`);
+    if (rateLimited) {
+      ctx.onEvent?.(`Fuzz target ${target.apiEndpointRef || target.fieldSelector}: stopped early (rate limited), ${failures} failure(s) recorded so far`);
+    } else {
+      ctx.onEvent?.(`Fuzz target ${target.apiEndpointRef || target.fieldSelector}: ${failures}/${inputs.length} failures`);
+    }
   }
 
   ctx.onEvent?.(`fuzz complete: ${findings.length} findings`);
   return {
     findings,
-    stats: { targetsRun: targets.length, totalInputs: targets.reduce((s, t) => s + generateInputs(t).length, 0) },
+    stats,
   };
 }

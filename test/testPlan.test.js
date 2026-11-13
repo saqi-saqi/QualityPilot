@@ -6,6 +6,7 @@ import {
   validateTestPlan,
   transitionStatus,
   createDraftPlan,
+  composeEndpointUrl,
 } from '../src/services/testPlan.js';
 
 describe('TestPlan schema', () => {
@@ -156,6 +157,67 @@ describe('TestPlan flows', () => {
     assert.equal(plan.flows[0].retry.maxAttempts, 2);
     assert.equal(plan.flows[0].retry.backoffMs, 500);
   });
+
+  it('accepts api-request steps with the full field set', () => {
+    const plan = parseTestPlan({
+      schemaVersion: 1,
+      id: 'p',
+      targetUrl: 'https://example.com',
+      flows: [{
+        ...baseFlow,
+        steps: [{
+          action: 'api-request',
+          method: 'POST',
+          url: 'https://example.com/api/orders',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{"item": 1}',
+          expectStatus: 201,
+          expectJsonPath: '$.id',
+          saveAsVar: 'orderId',
+        }],
+      }],
+    });
+    const step = plan.flows[0].steps[0];
+    assert.equal(step.action, 'api-request');
+    assert.equal(step.method, 'POST');
+    assert.equal(step.expectStatus, 201);
+    assert.equal(step.saveAsVar, 'orderId');
+  });
+
+  it('rejects api-request steps with a bad HTTP method or missing url', () => {
+    assert.throws(() => parseTestPlan({
+      schemaVersion: 1,
+      id: 'p',
+      targetUrl: 'https://example.com',
+      flows: [{ ...baseFlow, steps: [{ action: 'api-request', method: 'TRACE', url: 'https://example.com' }] }],
+    }));
+    assert.throws(() => parseTestPlan({
+      schemaVersion: 1,
+      id: 'p',
+      targetUrl: 'https://example.com',
+      flows: [{ ...baseFlow, steps: [{ action: 'api-request', method: 'GET' }] }],
+    }));
+  });
+
+  it('accepts allowCrossOrigin + needsReview flow keys (set by the flowInferrer)', () => {
+    const plan = parseTestPlan({
+      schemaVersion: 1,
+      id: 'p',
+      targetUrl: 'https://example.com',
+      flows: [{ ...baseFlow, allowCrossOrigin: false, needsReview: true }],
+    });
+    assert.equal(plan.flows[0].allowCrossOrigin, false);
+    assert.equal(plan.flows[0].needsReview, true);
+  });
+
+  it('rejects unknown flow keys (strict mode still applies)', () => {
+    assert.throws(() => parseTestPlan({
+      schemaVersion: 1,
+      id: 'p',
+      targetUrl: 'https://example.com',
+      flows: [{ ...baseFlow, crossOrigin: true }],
+    }), /unrecognized/i);
+  });
 });
 
 describe('TestPlan apiEndpoints', () => {
@@ -184,6 +246,55 @@ describe('TestPlan apiEndpoints', () => {
       apiEndpoints: [{ method: 'CONNECT', path: '/x' }],
     }));
   });
+
+  it('accepts latencyBudgetMs (positive int) on endpoints', () => {
+    const plan = parseTestPlan({
+      schemaVersion: 1,
+      id: 'p',
+      targetUrl: 'https://example.com',
+      apiEndpoints: [{ method: 'GET', path: '/api/fast', latencyBudgetMs: 300 }],
+    });
+    assert.equal(plan.apiEndpoints[0].latencyBudgetMs, 300);
+  });
+
+  it('rejects non-positive latencyBudgetMs', () => {
+    assert.throws(() => parseTestPlan({
+      schemaVersion: 1,
+      id: 'p',
+      targetUrl: 'https://example.com',
+      apiEndpoints: [{ method: 'GET', path: '/api/slow', latencyBudgetMs: 0 }],
+    }));
+  });
+
+  it('accepts same-origin baseUrl but rejects cross-origin baseUrl (no run-target override)', () => {
+    const ok = parseTestPlan({
+      schemaVersion: 1,
+      id: 'p',
+      targetUrl: 'https://example.com',
+      apiEndpoints: [{ method: 'GET', path: '/api/users', baseUrl: 'https://example.com' }],
+    });
+    assert.equal(ok.apiEndpoints[0].baseUrl, 'https://example.com');
+
+    const crossOrigin = validateTestPlan({
+      schemaVersion: 1,
+      id: 'p',
+      targetUrl: 'https://example.com',
+      apiEndpoints: [{ method: 'GET', path: '/api/users', baseUrl: 'https://evil.example.net' }],
+    });
+    assert.equal(crossOrigin.ok, false);
+    assert.ok(crossOrigin.error.some(e => /same-origin/.test(e.message)));
+  });
+
+  it('composeEndpointUrl resolves paths against the run target (or a same-origin baseUrl)', () => {
+    assert.equal(
+      composeEndpointUrl({ method: 'GET', path: '/api/users/:id' }, 'https://example.com'),
+      'https://example.com/api/users/:id'
+    );
+    assert.equal(
+      composeEndpointUrl({ method: 'GET', path: '/api/x', baseUrl: 'https://example.com' }, 'https://example.com'),
+      'https://example.com/api/x'
+    );
+  });
 });
 
 describe('TestPlan fuzzTargets', () => {
@@ -196,11 +307,13 @@ describe('TestPlan fuzzTargets', () => {
         pageUrl: 'https://example.com/form',
         formSelector: '#login-form',
         fieldSelector: 'input[name="email"]',
+        submitSelector: 'button[type="submit"]',
         generators: ['empty', 'oversize', 'unicode'],
         iterations: 30,
       }],
     });
     assert.equal(plan.fuzzTargets[0].generators.length, 3);
+    assert.equal(plan.fuzzTargets[0].submitSelector, 'button[type="submit"]');
   });
 
   it('accepts an API-field fuzz target', () => {
@@ -291,6 +404,18 @@ describe('TestPlan perf + visual + a11y', () => {
       a11yRules: [{ rule: 'color-contrast' }],
     });
     assert.equal(plan.a11yRules[0].level, 'serious');
+  });
+
+  it('accepts top-level perfThrottle + bypassCsp execution toggles', () => {
+    const plan = parseTestPlan({
+      schemaVersion: 1,
+      id: 'p',
+      targetUrl: 'https://example.com',
+      perfThrottle: true,
+      bypassCsp: false,
+    });
+    assert.equal(plan.perfThrottle, true);
+    assert.equal(plan.bypassCsp, false);
   });
 });
 

@@ -17,6 +17,7 @@
  * BrowserPool's internal limit (one context per browser at a time by default).
  */
 
+import { createHash } from 'node:crypto';
 import { runExecutor, hasExecutor } from '../services/executorRegistry.js';
 import { canonicalizeUrl } from '../utils/classify.js';
 
@@ -24,6 +25,15 @@ const SEVERITY_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
 
 function worstSeverity(a, b) {
   return SEVERITY_RANK[a] >= SEVERITY_RANK[b] ? a : b;
+}
+
+/**
+ * Short content hash — used when a finding has no selector/target so that
+ * identical text findings still dedup across cells (instead of every
+ * '' signature collapsing unrelated findings into one).
+ */
+function shortHash(text) {
+  return createHash('sha1').update(String(text)).digest('hex').slice(0, 16);
 }
 
 /**
@@ -87,7 +97,7 @@ function buildCellContext(cell, baseCtx) {
 async function runCell(cell, baseCtx) {
   let context = null;
   const cellFindings = [];
-  const cellStats = { cellId: cell.id, executors: [] };
+  const cellStats = { cellId: cell.id, status: 'ok', executors: [] };
 
   try {
     if (cell.needsBrowser && baseCtx.browserPool) {
@@ -104,10 +114,12 @@ async function runCell(cell, baseCtx) {
     for (const executorName of cell.executors) {
       if (baseCtx.signal?.aborted) {
         cellStats.executors.push({ name: executorName, status: 'aborted' });
+        cellStats.status = 'aborted';
         break;
       }
       if (!hasExecutor(executorName)) {
         cellStats.executors.push({ name: executorName, status: 'missing' });
+        cellStats.status = 'error';
         continue;
       }
 
@@ -128,6 +140,7 @@ async function runCell(cell, baseCtx) {
           error: err.message,
           durationMs: Date.now() - start,
         });
+        cellStats.status = 'error';
       }
     }
   } finally {
@@ -141,6 +154,11 @@ async function runCell(cell, baseCtx) {
 
 /**
  * Extract a stable selector or affected node signature from a finding.
+ *
+ * Findings with no selector/target at all fall back to a hash of the title +
+ * first 120 chars of evidence — so two genuinely identical text findings
+ * merge, while two different ones never collide under the old shared ''
+ * signature.
  */
 export function getNodeSignature(finding) {
   if (finding.selector) return String(finding.selector).trim();
@@ -153,7 +171,9 @@ export function getNodeSignature(finding) {
     }
     if (targets.length > 0) return targets.sort().join('; ');
   }
-  return '';
+  // Fallback signature: title + first 120 chars of evidence (hashed).
+  const basis = `${finding.title || ''}|${String(finding.evidence || '').slice(0, 120)}`;
+  return shortHash(basis);
 }
 
 /**
@@ -174,10 +194,13 @@ export function dedupFindings(findings) {
     const key = `${ruleId}::${selector}::${normUrl}`;
 
     if (!merged.has(key)) {
+      // Seed the first finding's affectedPages with its own pageUrl — a
+      // finding always affected at least the page it was found on, even when
+      // the executor forgot to pass affectedPages (or passed an empty array).
       merged.set(key, {
         ...finding,
         occurrences: finding.occurrences || 1,
-        affectedPages: new Set(finding.affectedPages || (rawUrl ? [rawUrl] : [])),
+        affectedPages: new Set([...(finding.affectedPages || []), ...(rawUrl ? [rawUrl] : [])]),
         matrixCells: new Set(finding.matrixCell?.cellId ? [finding.matrixCell.cellId] : []),
       });
     } else {
@@ -232,7 +255,7 @@ export async function runMatrix({
 
   if (!cells) {
     const { planMatrix } = await import('./matrixPlanner.js');
-    cells = planMatrix(plan);
+    cells = planMatrix(plan, Array.isArray(options.roles) && options.roles.length ? options.roles : null);
   }
 
   onEvent?.(`Running matrix of ${cells.length} cells (concurrency=${concurrency})`);
@@ -243,7 +266,7 @@ export async function runMatrix({
     createFinding,
     onEvent,
     signal,
-    options: {},
+    options: { ...options },
     screenshotsDir: options.screenshotsDir || '/tmp/screenshots',
     runId: options.runId || `run_${Date.now()}`,
   };
@@ -254,6 +277,7 @@ export async function runMatrix({
     totalCells: cells.length,
     completedCells: 0,
     failedCells: 0,
+    abortedCells: 0,
     cells: [],
     totalDurationMs: 0,
     concurrency,
@@ -265,8 +289,9 @@ export async function runMatrix({
     allStats.cells = result.cellStats;
     // A cell "succeeded" if it ran without throwing (even if some inner executors errored).
     // A cell "failed" if runCell itself threw (rare — usually executor errors are caught inside).
-    allStats.completedCells = result.cellStats.filter(c => c.status !== 'error' && c.status !== 'aborted').length;
+    allStats.completedCells = result.cellStats.filter(c => c.status === 'ok').length;
     allStats.failedCells = result.cellStats.filter(c => c.status === 'error').length;
+    allStats.abortedCells = result.cellStats.filter(c => c.status === 'aborted').length;
   } else {
     for (const cell of cells) {
       if (signal?.aborted) {
@@ -277,12 +302,15 @@ export async function runMatrix({
       try {
         const { findings, stats } = await runCell(cell, baseCtx);
         allFindings.push(...findings);
-        allStats.completedCells++;
+        if (stats.status === 'ok') allStats.completedCells++;
+        else if (stats.status === 'error') allStats.failedCells++;
+        else if (stats.status === 'aborted') allStats.abortedCells = (allStats.abortedCells || 0) + 1;
         allStats.cells.push(stats);
       } catch (err) {
         allStats.failedCells++;
         allStats.cells.push({ cellId: cell.id, status: 'error', error: err.message });
       }
+
     }
   }
 
@@ -293,6 +321,26 @@ export async function runMatrix({
 
   // Build unified coverage failure findings if any page load failures occurred
   const coverageFailures = [];
+  const incompleteCells = allStats.cells.filter(cell => cell.status === 'error');
+  for (const cell of incompleteCells) {
+    const failedExecutors = (cell.executors || [])
+      .filter(executor => executor.status === 'error' || executor.status === 'missing')
+      .map(executor => `${executor.name} (${executor.status})`);
+    coverageFailures.push(createFinding({
+      title: `Matrix cell failed: ${cell.cellId}`,
+      severity: 'info',
+      confidence: 'high',
+      category: 'Scan Coverage',
+      findingType: 'coverage-failure',
+      origin: 'first-party',
+      ruleId: 'matrix-cell-failure',
+      description: `The matrix cell did not complete successfully. Failed executors: ${failedExecutors.join(', ') || 'unknown'}.`,
+      evidence: JSON.stringify(cell),
+      occurrences: 1,
+      affectedPages: [],
+      blockedExecutors: failedExecutors,
+    }));
+  }
   if (baseCtx.pageFailures?.size > 0) {
     for (const failure of baseCtx.pageFailures.values()) {
       const blocked = Array.from(failure.blockedExecutors);
@@ -365,6 +413,11 @@ async function runMatrixConcurrently(cells, baseCtx, concurrency, signal, onEven
   }
 
   await Promise.all(workers);
+
+  while (queue.length > 0) {
+    const cell = queue.shift();
+    cellStats.push({ cellId: cell.id, status: 'aborted', executors: [] });
+  }
 
   return { findings: allFindings, cellStats };
 }

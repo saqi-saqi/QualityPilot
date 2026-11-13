@@ -2,6 +2,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { getDatabase, closeDatabase } from '../src/storage/db.js';
 import { JobQueue } from '../src/storage/jobQueue.js';
+import { saveRun, getRun } from '../src/storage/runStore.js';
 
 describe('JobQueue (SQLite-backed)', () => {
   let db;
@@ -114,6 +115,61 @@ describe('JobQueue (SQLite-backed)', () => {
     assert.equal(state2.status, 'failed');
   });
 
+  it('recovers ALL running jobs regardless of locked_at age (single-process app)', () => {
+    queue.enqueue({ runId: 'fresh-crash', maxAttempts: 1 });
+    queue.acquireNextJob();
+    // locked_at is a SECOND old — a 15-minute stale filter would skip it,
+    // but a restart means the owning process is gone: recover it anyway.
+    const recovery = queue.recoverStaleJobs();
+    assert.equal(recovery.totalStale, 1);
+    assert.equal(recovery.recovered, 0); // maxAttempts=1 → marked failed
+    assert.equal(queue.getJob('fresh-crash').status, 'failed');
+  });
+
+  it('marks the corresponding runs rows failed with an interruption event in the same transaction', () => {
+    // Seed a run row that was executing when the process died
+    saveRun({
+      runId: 'run_interrupted',
+      url: 'https://example.com',
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      events: [{ message: 'Starting', timestamp: new Date().toISOString() }],
+    }, db);
+
+    queue.enqueue({ runId: 'run_interrupted', maxAttempts: 1 });
+    queue.acquireNextJob();
+    const recovery = queue.recoverStaleJobs();
+    assert.equal(recovery.totalStale, 1);
+
+    const run = getRun('run_interrupted', db);
+    assert.equal(run.status, 'failed');
+    assert.match(run.error, /interrupted by server restart/);
+    const lastEvent = run.events[run.events.length - 1];
+    assert.match(lastEvent.message, /interrupted by server restart/);
+  });
+
+  it('resets job to pending and run to queued when attempts remain on recovery', () => {
+    saveRun({
+      runId: 'run_retryable',
+      url: 'https://example.com',
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      events: [{ message: 'Starting', timestamp: new Date().toISOString() }],
+    }, db);
+
+    queue.enqueue({ runId: 'run_retryable', maxAttempts: 2 });
+    queue.acquireNextJob();
+    const recovery = queue.recoverStaleJobs();
+    assert.equal(recovery.totalStale, 1);
+    assert.equal(recovery.recovered, 1);
+
+    const job = queue.getJob('run_retryable');
+    assert.equal(job.status, 'pending');
+
+    const run = getRun('run_retryable', db);
+    assert.equal(run.status, 'queued');
+  });
+
   it('returns queue stats', () => {
     queue.enqueue({ runId: 'j1' });
     queue.enqueue({ runId: 'j2' });
@@ -128,5 +184,17 @@ describe('JobQueue (SQLite-backed)', () => {
     assert.equal(stats.running, 1);
     assert.equal(stats.completed, 1);
     assert.equal(stats.failed, 0);
+  });
+
+  it('cancels pending and running jobs without re-queuing them', () => {
+    queue.enqueue({ runId: 'pending-job' });
+    assert.equal(queue.cancel('pending-job'), true);
+    assert.equal(queue.getJob('pending-job').status, 'cancelled');
+    assert.equal(queue.acquireNextJob(), null);
+
+    queue.enqueue({ runId: 'running-job' });
+    queue.acquireNextJob();
+    assert.equal(queue.cancel('running-job'), true);
+    assert.equal(queue.getJob('running-job').status, 'cancelled');
   });
 });

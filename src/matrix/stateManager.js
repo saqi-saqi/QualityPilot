@@ -13,6 +13,16 @@
  *   3. Returns snapshots that BrowserPool can apply to new contexts
  *      without re-running the login flow each time
  *
+ * Cross-browser reuse: snapshots are captured on chromium (the only browser
+ * primed today). Cookies are portable across engines, so getSnapshot() for
+ * firefox/webkit falls back to the chromium capture (surfaced as an
+ * "auth reused from chromium capture" event) instead of silently running
+ * those cells unauthenticated.
+ *
+ * TTL re-prime: when a snapshot's 30-minute TTL expires mid-run, applyTo()
+ * re-captures the login ONCE (per role) rather than silently falling back
+ * to anonymous browsing.
+ *
  * StateSnapshot shape:
  *   {
  *     role:       string,
@@ -157,11 +167,22 @@ export async function captureAuthState({ browser, flow, viewport, runStep, signa
  *   await newContext.addCookies(snapshot.cookies);
  */
 export class StateManager {
-  constructor({ runStep, ttlMs = DEFAULT_SESSION_TTL_MS } = {}) {
+  constructor({ runStep, ttlMs = DEFAULT_SESSION_TTL_MS, onEvent } = {}) {
     if (!runStep) throw new Error('StateManager requires runStep');
     this.runStep = runStep;
     this.ttlMs = ttlMs;
+    this.onEvent = onEvent || null;
     this.snapshots = new Map();  // key: `${role}:${browser}` → snapshot
+    // Context saved from prime() so mid-run TTL expiry can re-capture once.
+    this._primeContext = null;
+    this._roles = null;
+    this._reprimedRoles = new Set();
+  }
+
+  _emit(message) {
+    try {
+      this.onEvent?.(message);
+    } catch { /* event sink must never break auth */ }
   }
 
   /**
@@ -171,6 +192,9 @@ export class StateManager {
   async prime({ plan, browser, browserName = 'chromium', viewport, signal }) {
     const roles = resolveAuthRoles(plan);
     const warnings = [];
+
+    this._roles = roles;
+    this._primeContext = { plan, browser, browserName, viewport, signal };
 
     for (const [role, info] of Object.entries(roles)) {
       if (role === 'anon' || !info.flow) continue;
@@ -197,9 +221,30 @@ export class StateManager {
 
   /**
    * Get a cached snapshot. Returns null if not primed or expired.
+   *
+   * Cross-browser fallback: only chromium is primed today, but cookies are
+   * portable across engines — firefox/webkit lookups fall back to the
+   * chromium snapshot for the same role (surfaced via onEvent).
    */
   getSnapshot(role, browserName) {
     const key = `${role}:${browserName}`;
+    const snap = this._getFreshSnapshot(key);
+    if (snap) return snap;
+
+    // Cross-browser fallback: chromium capture reused for other engines.
+    // (Never for anon — anonymous is intentionally unauthenticated.)
+    if (role !== 'anon' && browserName !== 'chromium') {
+      const chromiumSnap = this._getFreshSnapshot(`${role}:chromium`);
+      if (chromiumSnap) {
+        this._emit(`auth reused from chromium capture (role "${role}" on ${browserName})`);
+        return chromiumSnap;
+      }
+    }
+    return null;
+  }
+
+  /** Internal: snapshot lookup that quietly drops expired entries. */
+  _getFreshSnapshot(key) {
     const snap = this.snapshots.get(key);
     if (!snap) return null;
     if (snap.expiresAt && new Date(snap.expiresAt).getTime() < Date.now()) {
@@ -210,11 +255,59 @@ export class StateManager {
   }
 
   /**
+   * Re-capture a role's auth state once when the TTL expired mid-run.
+   * Returns the fresh snapshot, or null when re-priming is unavailable
+   * (no prime context / already re-primed / capture failed).
+   */
+  async _reprimeOnce(role) {
+    if (role === 'anon') return null;
+    if (this._reprimedRoles.has(role)) return null;   // only once per role
+    if (!this._primeContext?.browser) return null;
+
+    const info = this._roles?.[role];
+    if (!info?.flow) return null;
+
+    this._reprimedRoles.add(role);
+    this._emit(`auth snapshot for role "${role}" expired — re-capturing login once`);
+
+    try {
+      const { cookies, origins } = await captureAuthState({
+        browser: this._primeContext.browser,
+        flow: info.flow,
+        viewport: this._primeContext.viewport,
+        runStep: this.runStep,
+        signal: this._primeContext.signal,
+      });
+      const snap = {
+        role,
+        browser: 'chromium',
+        cookies,
+        origins,
+        capturedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + this.ttlMs).toISOString(),
+      };
+      this.snapshots.set(`${role}:chromium`, snap);
+      return snap;
+    } catch (err) {
+      this._emit(`auth re-capture failed for role "${role}": ${err.message} — continuing anonymous`);
+      return null;
+    }
+  }
+
+  /**
    * Apply a snapshot to a fresh BrowserContext.
-   * No-op if no snapshot exists (anonymous role).
+   *
+   * Resolution order for authenticated roles:
+   *   1. exact (role, browser) snapshot
+   *   2. chromium snapshot for the same role (cookies are portable)
+   *   3. one mid-run re-capture when the TTL expired
+   * No-op (returns false) when no auth is available — anonymous role.
    */
   async applyTo(context, role, browserName) {
-    const snap = this.getSnapshot(role, browserName);
+    let snap = this.getSnapshot(role, browserName);
+    if (!snap) {
+      snap = await this._reprimeOnce(role);
+    }
     if (!snap) return false;
 
     if (snap.cookies?.length) {

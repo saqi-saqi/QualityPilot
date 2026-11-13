@@ -1,6 +1,9 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { isDue, nextRunAt, MonitorSchema } from '../src/services/monitors.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { isDue, nextRunAt, MonitorSchema, MonitorStore } from '../src/services/monitors.js';
 
 describe('isDue', () => {
   const base = { enabled: true, intervalHours: 24 };
@@ -80,6 +83,33 @@ describe('MonitorSchema', () => {
     assert.equal(parsed.success, false);
   });
 
+  it('rejects non-http(s) url schemes (file:// can never open in a browser scan)', () => {
+    for (const url of ['file:///etc/passwd', 'ftp://acme.com', 'javascript:alert(1)', 'data:text/html,x']) {
+      const parsed = MonitorSchema.safeParse({ ...valid, url });
+      assert.equal(parsed.success, false, `scheme must be rejected: ${url}`);
+      if (!parsed.success) {
+        assert.match(parsed.error.issues[0].message, /http or https/);
+      }
+    }
+  });
+
+  it('accepts roles and defaults them to []', () => {
+    const parsed = MonitorSchema.safeParse(valid);
+    assert.equal(parsed.success, true);
+    assert.deepEqual(parsed.data.roles, []);
+
+    const withRoles = MonitorSchema.safeParse({ ...valid, roles: ['default', 'admin-user'] });
+    assert.equal(withRoles.success, true);
+    assert.deepEqual(withRoles.data.roles, ['default', 'admin-user']);
+  });
+
+  it('rejects roles that fail the role charset guard', () => {
+    for (const roles of [['../evil'], ['has space'], ['x'.repeat(33)], ['ok', '']]) {
+      const parsed = MonitorSchema.safeParse({ ...valid, roles });
+      assert.equal(parsed.success, false, `roles must be rejected: ${JSON.stringify(roles)}`);
+    }
+  });
+
   it('rejects ids with invalid characters', () => {
     const parsed = MonitorSchema.safeParse({ ...valid, id: 'has spaces!' });
     assert.equal(parsed.success, false);
@@ -98,5 +128,41 @@ describe('MonitorSchema', () => {
   it('rejects unknown option keys (strict)', () => {
     const parsed = MonitorSchema.safeParse({ ...valid, options: { evil: true } });
     assert.equal(parsed.success, false);
+  });
+});
+
+describe('MonitorStore URL gate', () => {
+  let dir;
+  let store;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sqa-monitors-'));
+    store = new MonitorStore(dir, { useSqlite: false });
+  });
+
+  it('rejects non-http(s) monitor urls with a clear error (no DNS needed)', async () => {
+    const res = await store.add({ id: 'evil', label: 'Evil', url: 'file:///etc/passwd' });
+    assert.equal(res.ok, false);
+    assert.match(res.error, /http or https/);
+    assert.deepEqual(await store.list(), [], 'rejected monitor must not be persisted');
+  });
+
+  it('throws (→ HTTP 400) when an update tries to sneak in a blocked url', async () => {
+    await assert.rejects(
+      () => store.update('whatever', { url: 'file:///etc/passwd' }),
+      /url: Protocol not allowed/
+    );
+  });
+
+  it('applies state patches without re-validating the url (no DNS dependency)', async () => {
+    // Seed an existing monitor directly so no DNS round-trip is needed.
+    await fs.promises.writeFile(path.join(dir, 'monitors.json'), JSON.stringify([{
+      id: 'm1', label: 'M1', url: 'https://acme.com', roles: [], options: {},
+      intervalHours: 24, enabled: true, onlyNewFindings: true, webhookUrl: '',
+      lastRunAt: null, lastRunId: null, lastScore: null, lastStatus: null,
+    }]));
+    const updated = await store.update('m1', { lastRunAt: '2026-01-01T00:00:00.000Z', lastScore: 90 });
+    assert.equal(updated.lastRunAt, '2026-01-01T00:00:00.000Z');
+    assert.equal(updated.url, 'https://acme.com');
   });
 });

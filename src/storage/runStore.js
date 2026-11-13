@@ -14,6 +14,9 @@ function safeParse(jsonStr, fallback = null) {
   }
 }
 
+/** Legal triage states for a finding (dashboard PATCH /api/runs/:id/findings). */
+export const FINDING_STATES = ['open', 'acknowledged', 'false_positive', 'fixed'];
+
 /**
  * Convert a database row to a domain run object.
  */
@@ -71,8 +74,12 @@ export function saveRun(run, db = getDatabase()) {
     matrixStats = null,
     workflowResults = [],
     trackerStats = null,
+    // runtime-only marker — never persisted
+    doneEmitted: _doneEmitted,
     ...rest
   } = run;
+
+  void _doneEmitted;
 
   const metadata = { ...rest };
   if (trackerStats) metadata.trackerStats = trackerStats;
@@ -143,8 +150,13 @@ export function getRun(runId, db = getDatabase()) {
 
 /**
  * List runs, returning summaries sorted by started_at DESC.
+ * `limit` is clamped to [1, 200] so a bad query can't dump the whole table.
  */
 export function listRuns({ db = getDatabase(), limit = 100, offset = 0, status, url } = {}) {
+  const parsedLimit = Number(limit);
+  const effectiveLimit = Math.min(Math.max(Number.isFinite(parsedLimit) ? Math.floor(parsedLimit) : 100, 1), 200);
+  const parsedOffset = Number(offset);
+  const effectiveOffset = Math.max(Number.isFinite(parsedOffset) ? Math.floor(parsedOffset) : 0, 0);
   let query = 'SELECT id, url, status, mode, score, started_at, completed_at, summary_json, error FROM runs';
   const conditions = [];
   const params = [];
@@ -163,7 +175,7 @@ export function listRuns({ db = getDatabase(), limit = 100, offset = 0, status, 
   }
 
   query += ' ORDER BY started_at DESC LIMIT ? OFFSET ?';
-  params.push(limit, offset);
+  params.push(effectiveLimit, effectiveOffset);
 
   const rows = db.prepare(query).all(...params);
 
@@ -197,4 +209,72 @@ export function cleanupOldRuns(maxAgeMs = 24 * 60 * 60 * 1000, db = getDatabase(
   const stmt = db.prepare('DELETE FROM runs WHERE started_at < ?');
   const info = stmt.run(cutoff);
   return info.changes;
+}
+
+// ─── finding triage states ───────────────────────────────────────────
+
+/**
+ * Persist the triage state for one finding of one run.
+ * @param {string} runId
+ * @param {string} ruleId
+ * @param {string} pageUrl
+ * @param {string} state — one of FINDING_STATES (open | acknowledged | false_positive | fixed)
+ * @param {object} [db]
+ * @returns {{ runId, ruleId, pageUrl, state, updatedAt }}
+ */
+export function setFindingState(runId, ruleId, pageUrl, state, db = getDatabase()) {
+  if (!runId) throw new Error('setFindingState requires runId');
+  if (!ruleId) throw new Error('setFindingState requires ruleId');
+  if (!pageUrl) throw new Error('setFindingState requires pageUrl');
+  if (!FINDING_STATES.includes(state)) {
+    throw new Error(`Invalid state "${state}" — must be one of: ${FINDING_STATES.join(', ')}`);
+  }
+  const updatedAt = new Date().toISOString();
+  const stmt = db.prepare(`
+    INSERT INTO finding_states (run_id, rule_id, page_url, state, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(run_id, rule_id, page_url) DO UPDATE SET
+      state = excluded.state,
+      updated_at = excluded.updated_at
+  `);
+  stmt.run(runId, ruleId, pageUrl, state, updatedAt);
+  return { runId, ruleId, pageUrl, state, updatedAt };
+}
+
+/**
+ * Load all triage states for a run.
+ * @returns {Map<string, string>} keyed `"${ruleId}|${pageUrl}"` → state (empty Map when none)
+ */
+export function getFindingStates(runId, db = getDatabase()) {
+  const rows = db.prepare('SELECT rule_id, page_url, state FROM finding_states WHERE run_id = ?').all(runId);
+  const states = new Map();
+  for (const row of rows) {
+    states.set(`${row.rule_id}|${row.page_url}`, row.state);
+  }
+  return states;
+}
+
+// ─── plan persistence ────────────────────────────────────────────────
+
+/**
+ * Persist the approved test plan JSON for a run (runs.plan_json column).
+ * Accepts an object or an already-serialized JSON string.
+ * @returns {boolean} true when a run row was updated
+ */
+export function savePlan(runId, planJson, db = getDatabase()) {
+  if (!runId) throw new Error('savePlan requires runId');
+  const serialized = planJson == null ? null : (typeof planJson === 'string' ? planJson : JSON.stringify(planJson));
+  const stmt = db.prepare('UPDATE runs SET plan_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+  const info = stmt.run(serialized, runId);
+  return info.changes > 0;
+}
+
+/**
+ * Load the persisted plan for a run.
+ * @returns {object|null} parsed plan, or null when absent/unparseable
+ */
+export function getPlan(runId, db = getDatabase()) {
+  const row = db.prepare('SELECT plan_json FROM runs WHERE id = ?').get(runId);
+  if (!row || !row.plan_json) return null;
+  return safeParse(row.plan_json, null);
 }

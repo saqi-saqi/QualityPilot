@@ -192,9 +192,9 @@ describe('matrixRunner concurrency', () => {
       options: { concurrency: 4 },
     });
 
-    // All 4 cells completed (executor errors are recorded per-executor, not as cell failures)
-    assert.equal(result.stats.completedCells, 4);
-    assert.equal(result.stats.failedCells, 0);
+    // The failed executor makes its cell incomplete while other cells still finish.
+    assert.equal(result.stats.completedCells, 3);
+    assert.equal(result.stats.failedCells, 1);
 
     // But cell-1's executor status should be 'error'
     const cell1Stat = result.stats.cells.find(c => c.cellId === 'cell-1');

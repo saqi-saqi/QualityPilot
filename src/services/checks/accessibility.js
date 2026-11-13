@@ -15,7 +15,7 @@ const MAX_A11Y_SCREENSHOTS = 3;
  * @param {AbortSignal} [signal] - Optional abort signal
  * @returns {Promise<Array>} Array of findings
  */
-export async function checkAccessibility(pages, createFinding, onEvent, screenshotDir, runId, signal) {
+export async function checkAccessibility(pages, createFinding, onEvent, screenshotDir, runId, signal, context) {
   onEvent('Running accessibility checks');
   const findings = [];
   const violationGroups = new Map(); // Group by rule ID
@@ -28,16 +28,28 @@ export async function checkAccessibility(pages, createFinding, onEvent, screensh
     }
 
     const pageResult = pages[i];
-    if (!pageResult.page || pageResult.page.isClosed()) {
-      warn(`No open page instance for ${pageResult.url}, skipping accessibility check`);
-      continue;
+    let page = pageResult.page;
+    let ownPage = false;
+    if (!page || page.isClosed()) {
+      if (context) {
+        try {
+          page = await context.newPage();
+          await page.goto(pageResult.url, { waitUntil: 'domcontentloaded', timeout: 10000 });
+          ownPage = true;
+        } catch {
+          continue;
+        }
+      } else {
+        warn(`No open page instance for ${pageResult.url}, skipping accessibility check`);
+        continue;
+      }
     }
 
     onEvent(`Running accessibility check on page ${i + 1}/${pages.length}`);
     
     try {
       // Analyze with timeout to prevent hanging on massive DOMs
-      const axePromise = new AxeBuilder({ page: pageResult.page }).analyze();
+      const axePromise = new AxeBuilder({ page }).analyze();
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('axe-core analysis timed out after 12s')), AXE_TIMEOUT_MS)
       );
@@ -81,20 +93,20 @@ export async function checkAccessibility(pages, createFinding, onEvent, screensh
 
           // Take screenshot for visual accessibility issues (capped to avoid slowdowns)
           // Only for high-severity rules, max 1 per rule
-          if (impact === 'high' && !group.screenshot && screenshotCount < MAX_A11Y_SCREENSHOTS && !pageResult.page.isClosed()) {
+          if (impact === 'high' && !group.screenshot && screenshotCount < MAX_A11Y_SCREENSHOTS && !page.isClosed()) {
             try {
               const screenshotName = `a11y-${runId}-${screenshotCount}.png`;
               const screenshotPath = `${screenshotDir}/${screenshotName}`;
               
-              const element = await pageResult.page.$(node.target?.[0] || 'body').catch(() => null);
+              const element = await page.$(node.target?.[0] || 'body').catch(() => null);
               if (element) {
                 await element.screenshot({ path: screenshotPath, timeout: SCREENSHOT_TIMEOUT_MS }).catch(async () => {
-                  if (!pageResult.page.isClosed()) {
-                    await pageResult.page.screenshot({ path: screenshotPath, fullPage: false, timeout: SCREENSHOT_TIMEOUT_MS });
+                  if (!page.isClosed()) {
+                    await page.screenshot({ path: screenshotPath, fullPage: false, timeout: SCREENSHOT_TIMEOUT_MS });
                   }
                 });
-              } else if (!pageResult.page.isClosed()) {
-                await pageResult.page.screenshot({ path: screenshotPath, fullPage: false, timeout: SCREENSHOT_TIMEOUT_MS });
+              } else if (!page.isClosed()) {
+                await page.screenshot({ path: screenshotPath, fullPage: false, timeout: SCREENSHOT_TIMEOUT_MS });
               }
               group.screenshot = `/screenshots/${screenshotName}`;
               screenshotCount++;
@@ -106,6 +118,10 @@ export async function checkAccessibility(pages, createFinding, onEvent, screensh
       }
     } catch (err) {
       warn(`Accessibility check failed for ${pageResult.url}: ${err.message}`);
+    } finally {
+      if (ownPage && page) {
+        await page.close().catch(() => {});
+      }
     }
   }
   

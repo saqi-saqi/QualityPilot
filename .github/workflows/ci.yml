@@ -11,6 +11,9 @@ jobs:
     name: Node.js ${{ matrix.node-version }} on Ubuntu
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: read
+
     strategy:
       fail-fast: false
       matrix:

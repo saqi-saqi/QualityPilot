@@ -83,4 +83,17 @@ describe('Unit Tests: Scoring Logic (No Browser)', () => {
     ];
     assert.equal(calculateScore(thirdParty), 97);
   });
+
+  it('scales repeated-occurrence deductions log2 and hard-caps them at 3x', () => {
+    const make = (occurrences) => [
+      { severity: 'critical', confidence: 'confirmed', findingType: 'bug', origin: 'first-party', occurrences },
+    ];
+    // 1 occurrence → multiplier 1.0 → 100 - 15 = 85
+    assert.equal(calculateScore(make(1)), 85);
+    // 2 occurrences → 1 + 1*0.5 = 1.5 → 100 - 22.5 = 77.5
+    assert.equal(calculateScore(make(2)), 77.5);
+    // ≥16 occurrences → capped at 3.0 → 100 - 45 = 55
+    assert.equal(calculateScore(make(16)), 55);
+    assert.equal(calculateScore(make(10000)), 55);
+  });
 });

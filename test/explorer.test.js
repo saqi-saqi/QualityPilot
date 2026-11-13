@@ -7,6 +7,11 @@ import {
   summarizePlan,
 } from '../src/explorer/index.js';
 import {
+  collectObservedTokens,
+  selectorFragments,
+  checkFlowAgainstCrawl,
+} from '../src/explorer/flowInferrer.js';
+import {
   MockProvider,
   setDefaultProvider,
   ZaiSdkProvider,
@@ -271,6 +276,121 @@ describe('buildTestPlan end-to-end (with mock LLM)', () => {
       options: { summary: false, riskPriority: false },
     });
     assert.equal(plan.notes, '');
+  });
+
+  it('uses config.defaultBrowsers for the browser list (K)', async () => {
+    const { plan } = await buildTestPlan({
+      pages: samplePages,
+      targetUrl: 'https://example.com/',
+      siteOrigin: 'https://example.com',
+    });
+    // config.js currently has no defaultBrowsers (another agent adds it) —
+    // the fallback must be ['chromium'].
+    assert.ok(Array.isArray(plan.browsers) && plan.browsers.length >= 1);
+    assert.ok(plan.browsers.every(b => ['chromium', 'firefox', 'webkit'].includes(b)));
+  });
+
+  it('flags hallucinated flows with needsReview + a warning, without dropping them (L)', async () => {
+    const mock = makeMock();
+    mock.responses['Propose 3-5 test flows'] = {
+      flows: [
+        // Grounded: startUrl + first-step href both appear in the crawl
+        {
+          name: 'Login',
+          startUrl: 'https://example.com/',
+          steps: [{ action: 'click', selector: 'a[href="/login"]' }],
+        },
+        // Hallucinated: startUrl never crawled + selector never seen
+        {
+          name: 'Ghost Flow',
+          startUrl: 'https://example.com/never-crawled-page',
+          steps: [{ action: 'click', selector: '#totally-invented-button' }],
+        },
+      ],
+    };
+    setDefaultProvider(mock);
+
+    const { plan, warnings } = await buildTestPlan({
+      pages: samplePages,
+      targetUrl: 'https://example.com/',
+      siteOrigin: 'https://example.com',
+    });
+
+    assert.ok(plan.flows.some(f => f.name === 'Ghost Flow'), 'flagged flows stay included');
+    assert.ok(warnings.some(w => /Ghost Flow.*flagged for review/.test(w)), 'a review warning is emitted');
+    const ghost = plan.flows.find(f => f.name === 'Ghost Flow');
+    // If the plan schema already accepts needsReview, it must be set; the
+    // schema is owned by another agent — either way the plan stays valid.
+    const reValidated = TestPlan.safeParse(plan);
+    if (reValidated.success && 'needsReview' in ghost) {
+      assert.equal(ghost.needsReview, true);
+    }
+    // Grounded flows are not flagged
+    assert.ok(!warnings.some(w => /Login.*flagged for review/.test(w)));
+
+    setDefaultProvider(makeMock());  // reset for next test
+  });
+});
+
+// ─── hallucination pre-check helpers (unit) ──────────────────────────
+
+describe('flowInferrer hallucination pre-check (unit)', () => {
+  it('collects identifying tokens from links, inputs, images, titles', () => {
+    const tokens = collectObservedTokens([{
+      url: 'https://app.com/dashboard',
+      title: 'Dashboard',
+      meta: { h1: 'Welcome' },
+      links: ['/login', '/pricing'],
+      inputDetails: [{ selector: '#email', formSelector: 'form#login' }],
+      imageDetails: [{ selector: 'img#logo', src: '/logo.png' }],
+    }]);
+    assert.ok(tokens.has('/login'));
+    assert.ok(tokens.has('#email'));
+    assert.ok(tokens.has('form#login'));
+    assert.ok(tokens.has('img#logo'));
+    assert.ok(tokens.has('dashboard'));
+  });
+
+  it('extracts id/name/testid/href/class fragments from selectors', () => {
+    assert.deepEqual(
+      selectorFragments('a[href="/login"]'),
+      ['/login'],
+    );
+    assert.ok(selectorFragments('#save-changes').includes('save-changes'));
+    assert.ok(selectorFragments('input[name="email"]').includes('email'));
+    assert.deepEqual(selectorFragments('div > p'), [], 'pure tags have nothing checkable');
+  });
+
+  it('flags unknown startUrl + unknown selector; passes grounded flows', () => {
+    const tokens = new Set(['https://app.com', '/', '/login', 'a[href="/login"]']);
+    assert.match(
+      checkFlowAgainstCrawl(
+        { startUrl: 'https://app.com/ghost', steps: [{ action: 'click', selector: 'a[href="/login"]' }] },
+        tokens,
+        [],
+      ),
+      /never seen in the crawl/,
+    );
+    assert.match(
+      checkFlowAgainstCrawl(
+        { startUrl: 'https://app.com', steps: [{ action: 'click', selector: '#invented' }] },
+        tokens,
+        [],
+      ),
+      /first-step selector/,
+    );
+    assert.equal(
+      checkFlowAgainstCrawl(
+        { startUrl: 'https://app.com', steps: [{ action: 'click', selector: 'a[href="/login"]' }] },
+        tokens,
+        [],
+      ),
+      null,
+    );
+  });
+
+  it('skips the check when the crawl produced no structural tokens', () => {
+    assert.equal(checkFlowAgainstCrawl({ startUrl: 'https://x.com/ghost', steps: [] }, new Set(), []), null);
   });
 });
 

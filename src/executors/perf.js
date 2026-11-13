@@ -21,8 +21,18 @@ const METRIC_UNITS = {
   TBT: 'ms',
   FCP: 'ms',
   TTFB: 'ms',
+  INP: 'ms',
   pageSizeBytes: 'bytes',
   requestCount: 'requests',
+};
+
+// Fast 3G + 4x CPU throttling — applied only when plan.perfThrottle === true
+export const THROTTLE_PRESET = {
+  // Fast 3G (Lighthouse mobile preset)
+  latencyMs: 150,
+  downloadThroughputBytesPerSec: Math.floor((1.6 * 1024 * 1024) / 8),  // 1.6 Mbps
+  uploadThroughputBytesPerSec: Math.floor((750 * 1024) / 8),           // 750 Kbps
+  cpuThrottlingRate: 4,
 };
 
 /**
@@ -32,21 +42,37 @@ const METRIC_UNITS = {
  * @param {string} url
  * @param {object} [opts]
  * @param {number} [opts.settleMs=2500] — time to wait after load for LCP to settle
- * @returns {Promise<{ metrics: { LCP, CLS, TBT, FCP, TTFB, pageSizeBytes, requestCount, measured } }>}
+ * @param {boolean} [opts.throttle=false] — emulate Fast 3G network + 4x CPU
+ * @returns {Promise<{ metrics: { LCP, CLS, TBT, FCP, TTFB, INP, pageSizeBytes, requestCount, measured, throttled } }>}
  */
 export async function capturePerfMetrics(page, url, opts = {}) {
   const settleMs = opts.settleMs ?? 2500;
   const timeoutMs = opts.timeout ?? (config?.pageTimeoutMs || 30000);
+  const throttle = opts.throttle === true;
 
   // Create a CDP session if supported
   let client = null;
+  let throttleApplied = false;
   try {
     client = await page.context().newCDPSession(page);
     await client.send('Performance.enable').catch(() => {});
     await client.send('Network.enable').catch(() => {});
     await client.send('Network.clearBrowserCache').catch(() => {});
+    if (throttle) {
+      // Throttling must be in place BEFORE navigation to affect the load.
+      await client.send('Network.emulateNetworkConditions', {
+        offline: false,
+        latency: THROTTLE_PRESET.latencyMs,
+        downloadThroughput: THROTTLE_PRESET.downloadThroughputBytesPerSec,
+        uploadThroughput: THROTTLE_PRESET.uploadThroughputBytesPerSec,
+      }).then(() => { throttleApplied = true; }).catch(() => {});
+      await client.send('Emulation.setCPUThrottlingRate', { rate: THROTTLE_PRESET.cpuThrottlingRate }).catch(() => {});
+    }
   } catch {
     // CDP not available (e.g. mock context in tests)
+  }
+  if (throttle && !throttleApplied) {
+    console.warn('[perf] throttle requested but CDP network emulation unavailable — metrics are UNTHROTTLED');
   }
 
   // Pre-inject PerformanceObserver on the new document to buffer entries from the very start of navigation
@@ -63,6 +89,7 @@ export async function capturePerfMetrics(page, url, opts = {}) {
               startTime: entry.startTime,
               duration: entry.duration,
               hadRecentInput: entry.hadRecentInput,
+              interactionId: entry.interactionId ?? null,
             });
           }
         });
@@ -70,6 +97,11 @@ export async function capturePerfMetrics(page, url, opts = {}) {
         po.observe({ type: 'layout-shift', buffered: true });
         po.observe({ type: 'paint', buffered: true });
         po.observe({ type: 'longtask', buffered: true });
+        // Event Timing — 'event' entries carry interaction timing (INP-ish).
+        // durationThreshold is required for the entry type to be delivered.
+        try {
+          po.observe({ type: 'event', buffered: true, durationThreshold: 16 });
+        } catch {}
       } catch {}
     });
   } catch {}
@@ -88,12 +120,14 @@ export async function capturePerfMetrics(page, url, opts = {}) {
       FCP: null,
       TTFB: null,
       TBT: 0,
+      INP: null,
       measured: {
         LCP: false,
         CLS: false,
         FCP: false,
         TTFB: false,
         TBT: false,
+        INP: false,
       },
     };
 
@@ -152,6 +186,8 @@ export async function capturePerfMetrics(page, url, opts = {}) {
     let tbtSum = 0;
     let clsObserved = false;
     let tbtObserved = false;
+    let inpObserved = false;
+    let inpWorst = 0;
 
     try {
       const clsEntries = performance.getEntriesByType('layout-shift');
@@ -191,12 +227,22 @@ export async function capturePerfMetrics(page, url, opts = {}) {
         const dur = e.duration ?? e.value ?? 0;
         tbtSum += Math.max(0, dur - 50);
       }
+      // Event Timing entries with an interactionId are real user
+      // interactions — the worst interaction duration is our honest INP-ish
+      // approximation (real INP is a 98th-percentile over interactions).
+      if (e.entryType === 'event' && e.interactionId != null && e.interactionId > 0) {
+        inpObserved = true;
+        const dur = e.duration ?? 0;
+        if (dur > inpWorst) inpWorst = dur;
+      }
     }
 
     result.CLS = Number(clsSum.toFixed(3));
     result.measured.CLS = clsObserved;
     result.TBT = Math.round(tbtSum);
     result.measured.TBT = tbtObserved;
+    result.measured.INP = inpObserved;
+    result.INP = inpObserved ? Math.round(inpWorst) : null;
 
     return result;
   });
@@ -232,6 +278,13 @@ export async function capturePerfMetrics(page, url, opts = {}) {
     : 'unmeasured';
   const CLS = evalResults.CLS;
   const TBT = evalResults.TBT;
+  // INP-ish: worst observed interaction duration; 'unmeasured' when the page
+  // produced no interaction-timing entries (same honest-unmeasured pattern
+  // as the other metrics). Note: this approximates INP with the worst
+  // interaction rather than the official 98th percentile.
+  const INP = evalResults.measured.INP && evalResults.INP > 0
+    ? Math.round(evalResults.INP)
+    : 'unmeasured';
 
   return {
     metrics: {
@@ -240,6 +293,7 @@ export async function capturePerfMetrics(page, url, opts = {}) {
       TBT,
       FCP,
       TTFB,
+      INP,
       pageSizeBytes: resourceStats.pageSizeBytes,
       requestCount: resourceStats.requestCount,
       measured: {
@@ -248,7 +302,10 @@ export async function capturePerfMetrics(page, url, opts = {}) {
         TBT: evalResults.measured.TBT,
         FCP: evalResults.measured.FCP && evalResults.FCP > 0,
         TTFB: evalResults.measured.TTFB && evalResults.TTFB > 0,
+        INP: evalResults.measured.INP && evalResults.INP > 0,
       },
+      throttled: throttleApplied,
+      throttleRequested: throttle,
     },
   };
 }
@@ -298,8 +355,15 @@ export default async function perfExecutor(ctx) {
 
     const page = await ctx.context.newPage();
     try {
-      const { metrics } = await capturePerfMetrics(page, pageInfo.url);
+      const throttle = ctx.plan?.perfThrottle === true;
+      const { metrics } = await capturePerfMetrics(page, pageInfo.url, { throttle });
       const exceeded = checkBudgets(metrics, budgets);
+
+      const throttleNote = metrics.throttled
+        ? `\nThrottling: metrics measured under simulated Fast 3G network (${THROTTLE_PRESET.downloadThroughputBytesPerSec * 8} bps down / ${THROTTLE_PRESET.uploadThroughputBytesPerSec * 8} bps up / ${THROTTLE_PRESET.latencyMs}ms RTT) and ${THROTTLE_PRESET.cpuThrottlingRate}x CPU throttling (plan.perfThrottle = true).`
+        : (metrics.throttleRequested
+          ? '\nThrottling: requested but CDP emulation unavailable — metrics are UNTHROTTLED.'
+          : '');
 
       for (const ex of exceeded) {
         const unit = METRIC_UNITS[ex.budget.metric] || '';
@@ -312,8 +376,8 @@ export default async function perfExecutor(ctx) {
           origin: 'first-party',
           ruleId: `perf-budget-${ex.budget.metric}`,
           pageUrl: pageInfo.url,
-          description: `Metric ${ex.budget.metric} exceeded its budget by ${Math.round(ex.exceededBy)}${unit}.`,
-          evidence: `Budget: ${ex.budget.threshold}${unit}\nActual: ${ex.actual}${unit}\nAll metrics: ${JSON.stringify(metrics)}`,
+          description: `Metric ${ex.budget.metric} exceeded its budget by ${Math.round(ex.exceededBy)}${unit}.${metrics.throttled ? ' Measured under simulated Fast 3G + 4x CPU throttling (plan.perfThrottle).' : ''}`,
+          evidence: `Budget: ${ex.budget.threshold}${unit}\nActual: ${ex.actual}${unit}\nAll metrics: ${JSON.stringify(metrics)}${throttleNote}`,
           suggestedFix: getPerfFix(ex.budget.metric),
           metrics,
         }));

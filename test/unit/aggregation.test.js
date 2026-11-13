@@ -104,11 +104,18 @@ describe('Unit Tests: Aggregation Logic (No Browser)', () => {
 
     const summary = summarizeFindings(findings, 2);
 
+    // bySeverity is aligned with totalFindings: coverage failures and
+    // suspected unauthenticated probes are infrastructure noise, not content
+    // defects, so they are excluded from BOTH. Sum(bySeverity) === totalFindings.
     assert.equal(summary.bySeverity.critical, 1);
     assert.equal(summary.bySeverity.high, 1);
-    assert.equal(summary.bySeverity.low, 1);
-    assert.equal(summary.bySeverity.info, 1);
+    assert.equal(summary.bySeverity.low, 0);   // unauthenticated probe (low) excluded
+    assert.equal(summary.bySeverity.info, 0);  // coverage failure (info) excluded
+    assert.equal(summary.totalFindings, 2);
+    const severitySum = Object.values(summary.bySeverity).reduce((a, b) => a + b, 0);
+    assert.equal(severitySum, summary.totalFindings, 'sum(bySeverity) must equal totalFindings');
 
+    // byCategory still counts every finding (raw distribution)
     assert.equal(summary.byCategory.network, 2);
     assert.equal(summary.byCategory.accessibility, 1);
     assert.equal(summary.byCategory['Scan Coverage'], 1);

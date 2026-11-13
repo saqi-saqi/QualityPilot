@@ -128,6 +128,26 @@ export function fallbackEndpoints(apiCalls) {
   }));
 }
 
+/**
+ * Soften the response schema with an explicit `required` list: a top-level
+ * key is required only if it appeared in >= 2 observed responses. Keys seen
+ * once may be optional/conditional — treating them as required produced
+ * false schema-mismatch findings. The contract executor (apiContract.js)
+ * honors schema.required.
+ */
+export function annotateRequiredKeys(endpoint, matches) {
+  const schema = endpoint.responseSchema;
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return;
+  if (schema.type !== 'object' || !schema.properties) return;
+  const bodies = (matches || [])
+    .map(c => c.responseBody)
+    .filter(b => b != null && typeof b === 'object' && !Array.isArray(b));
+  if (bodies.length === 0) return;
+  const required = Object.keys(schema.properties)
+    .filter(k => bodies.filter(b => k in b).length >= 2);
+  endpoint.responseSchema = { ...schema, required };
+}
+
 export async function inferApiEndpoints({ pages, siteOrigin, llmOpts = {} }) {
   let allCalls = (pages || []).flatMap(p => p.apiCalls || []);
 
@@ -175,7 +195,11 @@ export async function inferApiEndpoints({ pages, siteOrigin, llmOpts = {} }) {
   for (const raw of rawEndpoints) {
     const parsed = ApiEndpointSchema.safeParse(raw);
     if (parsed.success) {
-      endpoints.push(parsed.data);
+      const ep = { ...parsed.data };
+      if (ep.auth?.secretRef) {
+        delete ep.auth.secretRef;
+      }
+      endpoints.push(ep);
     } else {
       const issues = parsed.error.issues
         .map(i => `${i.path.join('.')}: ${i.message}`)
@@ -226,6 +250,9 @@ export async function inferApiEndpoints({ pages, siteOrigin, llmOpts = {} }) {
       const withQuery = matches.find(c => urlHasQuery(c.url));
       if (withQuery) ep.queryParams = extractQueryParams(withQuery.url);
     }
+
+    // Soften the schema: mark keys required only when observed in >=2 responses
+    annotateRequiredKeys(ep, matches);
   }
 
   return { endpoints, warnings };

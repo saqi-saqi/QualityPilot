@@ -134,6 +134,9 @@ export function stripTrackingParams(urlString) {
 /**
  * Full canonicalization pipeline:
  *   raw URL → remove fragment → strip tracking params → sort params → normalize trailing slash
+ *
+ * The trailing slash is dropped on ALL paths (root included), so
+ * https://example.com/about/ and https://example.com/about dedup together.
  */
 export function canonicalizeUrl(urlString) {
   try {
@@ -146,7 +149,7 @@ export function canonicalizeUrl(urlString) {
     for (const key of toDelete) url.searchParams.delete(key);
     url.searchParams.sort();
     let result = url.toString();
-    if (result.endsWith('/') && url.pathname === '/' && !url.search) {
+    if (result.endsWith('/')) {
       result = result.slice(0, -1);
     }
     return result;

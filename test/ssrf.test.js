@@ -1,10 +1,14 @@
-import { describe, it, before, after } from 'node:test';
+import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import dns from 'node:dns';
 import {
   isPrivateIP,
   normalizeUrl,
   validateUrl,
   validateUrlSafe,
+  resolveAndPin,
+  resolvePublic,
+  safeFetch,
 } from '../src/services/ssrf.js';
 
 // We need allowPrivateTargets OFF (the default) for the strict tests.
@@ -32,6 +36,26 @@ describe('isPrivateIP', () => {
     assert.equal(isPrivateIP('0.0.0.1'), true);
   });
 
+  describe('production SSRF guard', () => {
+    it('ignores private-target opt-ins in production', async () => {
+      const previousNodeEnv = process.env.NODE_ENV;
+      const previousAllowPrivate = process.env.SQA_ALLOW_PRIVATE;
+      try {
+        process.env.NODE_ENV = 'production';
+        process.env.SQA_ALLOW_PRIVATE = 'true';
+        await assert.rejects(
+          () => validateUrl('http://127.0.0.1'),
+          /Private hostname not allowed|URL resolves to private IP/
+        );
+      } finally {
+        if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = previousNodeEnv;
+        if (previousAllowPrivate === undefined) delete process.env.SQA_ALLOW_PRIVATE;
+        else process.env.SQA_ALLOW_PRIVATE = previousAllowPrivate;
+      }
+    });
+  });
+
   it('does NOT flag 172.32.x.x as private (boundary check)', () => {
     assert.equal(isPrivateIP('172.32.0.1'), false);
     assert.equal(isPrivateIP('172.15.0.1'), false);
@@ -49,6 +73,43 @@ describe('isPrivateIP', () => {
     assert.equal(isPrivateIP('fc00::1'), true);
     assert.equal(isPrivateIP('fd00::1'), true);
     assert.equal(isPrivateIP('::'), true);
+  });
+
+  it('flags CGNAT 100.64.0.0/10 (incl. Tailscale 100.x) with boundaries', () => {
+    assert.equal(isPrivateIP('100.64.0.1'), true);
+    assert.equal(isPrivateIP('100.100.1.1'), true);
+    assert.equal(isPrivateIP('100.127.255.254'), true);
+    assert.equal(isPrivateIP('100.63.255.255'), false);
+    assert.equal(isPrivateIP('100.128.0.1'), false);
+  });
+
+  it('flags benchmark range 198.18.0.0/15 with boundaries', () => {
+    assert.equal(isPrivateIP('198.18.0.5'), true);
+    assert.equal(isPrivateIP('198.19.255.255'), true);
+    assert.equal(isPrivateIP('198.17.255.255'), false);
+    assert.equal(isPrivateIP('198.20.0.1'), false);
+  });
+
+  it('flags multicast 224.0.0.0/4 and reserved 240.0.0.0/4', () => {
+    assert.equal(isPrivateIP('224.0.0.1'), true);
+    assert.equal(isPrivateIP('239.255.255.255'), true);
+    assert.equal(isPrivateIP('240.0.0.1'), true);
+    assert.equal(isPrivateIP('255.255.255.255'), true);
+    assert.equal(isPrivateIP('223.255.255.255'), false);
+  });
+
+  it('flags 6to4 2002::/16 and NAT64 64:ff9b::/96 (tunneled IPv4)', () => {
+    assert.equal(isPrivateIP('2002::1'), true);
+    assert.equal(isPrivateIP('2002:c000:204::1'), true);   // embeds 192.0.2.4
+    assert.equal(isPrivateIP('2001::1'), false);            // teredo is a different /16
+    assert.equal(isPrivateIP('64:ff9b::192.0.2.33'), true);
+    assert.equal(isPrivateIP('64:ff9b:1::1'), false);       // 64:ff9b:1::/48, not NAT64
+    assert.equal(isPrivateIP('64:ff9b::'), true);
+  });
+
+  it('flags IPv6 multicast and keeps public IPv6 public', () => {
+    assert.equal(isPrivateIP('ff02::1'), true);
+    assert.equal(isPrivateIP('2606:2800:220:1:248:1893:25c8:1946'), false);
   });
 
   it('handles IPv4-mapped IPv6 (::ffff:)', () => {
@@ -149,23 +210,129 @@ describe('validateUrl', () => {
 describe('validateUrl with allowPrivateTargets', () => {
   it('accepts localhost when explicitly opted in', async () => {
     process.env.SQA_ALLOW_PRIVATE = 'true';
-    // Need to re-import config — but ES modules cache. We can call directly:
-    // The validateUrl function checks config.allowPrivateTargets live.
-    // Since config.js reads env at import time, we have to work around it:
-    // the validateUrl implementation reads `config.allowPrivateTargets` at call time.
-    // Our stub config reads env once at module load. Workaround: import fresh.
-    const fresh = await import(`../src/services/config.js?t=${Date.now()}`).catch(async () => {
-      // Fallback: just trust that the stub was loaded with allowPrivateTargets=true now.
-      // The behavior depends on whether config was read before or after env var set.
-      return null;
-    });
-    if (fresh?.config?.allowPrivateTargets) {
+    try {
       const r = await validateUrl('http://localhost:3000/');
       assert.equal(r.url, 'http://localhost:3000');
       assert.equal(r.hostname, 'localhost');
-    } else {
-      console.warn('Skipping localhost opt-in test — config already cached');
+    } finally {
+      delete process.env.SQA_ALLOW_PRIVATE;
     }
+  });
+
+  it('accepts localhost when developer-only ALLOW_PRIVATE_HOSTS=true is set', async () => {
+    process.env.ALLOW_PRIVATE_HOSTS = 'true';
+    try {
+      const r = await validateUrl('http://localhost:3000/');
+      assert.equal(r.url, 'http://localhost:3000');
+      assert.equal(r.hostname, 'localhost');
+      assert.deepEqual(r.resolvedIPs, ['localhost']);
+    } finally {
+      delete process.env.ALLOW_PRIVATE_HOSTS;
+    }
+  });
+
+  it('rejects localhost when ALLOW_PRIVATE_HOSTS is off by default', async () => {
+    delete process.env.ALLOW_PRIVATE_HOSTS;
     delete process.env.SQA_ALLOW_PRIVATE;
+    await assert.rejects(() => validateUrl('http://localhost:3000/'), /Private hostname not allowed/);
+  });
+});
+
+describe('resolveAndPin', () => {
+  // ssrf.js holds the node:dns module object and calls dns.promises.resolve4/6 —
+  // patch them (unique hostnames dodge the module's 60s DNS cache).
+  const originalResolve4 = dns.promises.resolve4;
+  const originalResolve6 = dns.promises.resolve6;
+  const mockA = new Map();
+  const mockAAAA = new Map();
+
+  beforeEach(() => {
+    mockA.clear();
+    mockAAAA.clear();
+    dns.promises.resolve4 = async (host) => {
+      if (mockA.has(host)) return mockA.get(host);
+      const err = new Error(`No A record for ${host}`);
+      err.code = 'ENOTFOUND';
+      throw err;
+    };
+    dns.promises.resolve6 = async (host) => {
+      if (mockAAAA.has(host)) return mockAAAA.get(host);
+      const err = new Error(`No AAAA record for ${host}`);
+      err.code = 'ENOTFOUND';
+      throw err;
+    };
+  });
+
+  afterEach(() => {
+    dns.promises.resolve4 = originalResolve4;
+    dns.promises.resolve6 = originalResolve6;
+  });
+
+  it('returns a host-resolver-rules MAP pinning the host to a validated IP', async () => {
+    mockA.set('pin-public.example', ['93.184.216.34']);
+    const r = await resolveAndPin('https://pin-public.example/page');
+    assert.deepEqual(r, { rules: 'MAP pin-public.example 93.184.216.34' });
+  });
+
+  it('prefers the first validated IP when several resolve', async () => {
+    mockA.set('multi.example', ['93.184.216.34', '8.8.8.8']);
+    const r = await resolveAndPin('https://multi.example/');
+    assert.equal(r.rules, 'MAP multi.example 93.184.216.34');
+  });
+
+  it('returns null when the host resolves to a private IP', async () => {
+    mockA.set('pin-evil.example', ['10.0.0.5']);
+    assert.equal(await resolveAndPin('https://pin-evil.example/'), null);
+  });
+
+  it('returns null when DNS fails', async () => {
+    assert.equal(await resolveAndPin('https://no-such-host-xyz.example/'), null);
+  });
+
+  it('returns null for non-http(s) or invalid URLs', async () => {
+    assert.equal(await resolveAndPin('file:///etc/passwd'), null);
+    assert.equal(await resolveAndPin('not-a-url'), null);
+  });
+
+  it('returns { rules: null } for IP-literal URLs (nothing to re-resolve)', async () => {
+    const r = await resolveAndPin('http://93.184.216.34/');
+    assert.deepEqual(r, { rules: null });
+  });
+
+  it('never throws (defensive contract for callers)', async () => {
+    assert.equal(await resolveAndPin(null), null);
+    assert.equal(await resolveAndPin(undefined), null);
+  });
+});
+
+describe('resolvePublic', () => {
+  it('rejects hostnames resolving to private IPs', async () => {
+    await assert.rejects(
+      async () => resolvePublic('192.168.1.1'),
+      /Blocked: non-public address/
+    );
+  });
+
+  it('rejects localhost and loopback when private targets disallowed', async () => {
+    await assert.rejects(
+      async () => resolvePublic('127.0.0.1'),
+      /Blocked: non-public address/
+    );
+  });
+});
+
+describe('safeFetch', () => {
+  it('blocks fetch to loopback and private IP addresses', async () => {
+    await assert.rejects(
+      async () => safeFetch('http://127.0.0.1:8080/'),
+      /Private hostname not allowed|URL resolves to private IP|Blocked: non-public address/
+    );
+  });
+
+  it('blocks fetch to non-http/https protocols', async () => {
+    await assert.rejects(
+      async () => safeFetch('file:///etc/passwd'),
+      /Protocol not allowed/
+    );
   });
 });

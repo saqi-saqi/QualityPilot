@@ -122,6 +122,32 @@ describe('Scheduler.tick', () => {
     assert.equal(monitor.lastStatus, 'completed');
     assert.equal(monitor.lastScore, 92);
   });
+
+  it('skips monitors whose lastStatus is queued/running (recent stamp)', async () => {
+    const now = Date.now();
+    store = new FakeStore([
+      // Due by interval, but a previous tick (or run-now) just triggered it
+      { id: 'a', url: 'https://a.com', enabled: true, intervalHours: 1, lastRunAt: new Date(now - 2 * 60 * 1000).toISOString(), lastStatus: 'queued' },
+      { id: 'b', url: 'https://b.com', enabled: true, intervalHours: 1, lastRunAt: new Date(now - 2 * 60 * 1000).toISOString(), lastStatus: 'running' },
+    ]);
+    store.runs = {};
+    scheduler = makeScheduler(store, createdRuns);
+    const result = await scheduler.tick(now);
+    assert.equal(result.triggered.length, 0);
+    assert.equal(createdRuns.length, 0);
+  });
+
+  it('fires a monitor left queued by a crash after the grace window (missed-while-down)', async () => {
+    const now = Date.now();
+    store = new FakeStore([
+      // Stamped 'queued' > 1h ago (e.g. server crashed mid-trigger) → recover
+      { id: 'a', url: 'https://a.com', enabled: true, intervalHours: 1, lastRunAt: new Date(now - 2 * 60 * 60 * 1000).toISOString(), lastStatus: 'queued' },
+    ]);
+    store.runs = {};
+    scheduler = makeScheduler(store, createdRuns);
+    const result = await scheduler.tick(now);
+    assert.equal(result.triggered.length, 1);
+  });
 });
 
 describe('triggerMonitor', () => {
@@ -139,5 +165,42 @@ describe('triggerMonitor', () => {
     const monitor = await store.get('m1');
     assert.equal(monitor.lastRunId, 'run_new');
     assert.equal(monitor.lastStatus, 'queued');
+  });
+
+  it('stamps lastRunAt BEFORE createRun (crash-safe ordering)', async () => {
+    const store = new FakeStore([
+      { id: 'm1', url: 'https://m.com', enabled: true, intervalHours: 24, lastRunAt: null, lastRunId: null },
+    ]);
+    await triggerMonitor(await store.get('m1'), {
+      monitorStore: store,
+      createRun: async () => {
+        // By the time createRun is invoked, the monitor must already be stamped
+        const during = await store.get('m1');
+        assert.equal(during.lastStatus, 'queued');
+        assert.ok(during.lastRunAt);
+        return 'run_late';
+      },
+    });
+  });
+
+  it('rolls the stamp back when createRun fails so the monitor stays due', async () => {
+    const store = new FakeStore([
+      {
+        id: 'm1', url: 'https://m.com', enabled: true, intervalHours: 1,
+        lastRunAt: '2026-01-01T00:00:00.000Z', lastStatus: 'completed', lastScore: 88,
+      },
+    ]);
+    await assert.rejects(
+      triggerMonitor(await store.get('m1'), {
+        monitorStore: store,
+        createRun: async () => { throw new Error('boom'); },
+      }),
+      /boom/
+    );
+    const monitor = await store.get('m1');
+    assert.equal(monitor.lastStatus, 'completed', 'lastStatus restored');
+    assert.equal(monitor.lastRunAt, '2026-01-01T00:00:00.000Z', 'lastRunAt restored');
+    assert.equal(monitor.lastScore, 88, 'lastScore restored');
+    assert.ok(monitor.lastRunId == null, 'no runId was ever written');
   });
 });

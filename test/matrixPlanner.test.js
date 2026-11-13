@@ -63,6 +63,17 @@ describe('planMatrix', () => {
     assert.ok(e2eCells.every(c => c.needsBrowser));
   });
 
+  it('runs form fuzzing in browser cells', () => {
+    const cells = planMatrix({
+      ...samplePlan,
+      executors: ['fuzz'],
+      fuzzTargets: [{ pageUrl: 'https://example.com/form', fieldSelector: '#email', generators: ['empty'] }],
+    });
+    assert.ok(cells.length > 0);
+    assert.ok(cells.every(cell => cell.needsBrowser));
+    assert.ok(cells.every(cell => cell.executors.includes('fuzz')));
+  });
+
   it('creates full-matrix cells per (browser, viewport, role) for a11y/perf/visual', () => {
     const cells = planMatrix(samplePlan);
     const fullCells = cells.filter(c => c.executors.includes('visual'));

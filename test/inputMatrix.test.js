@@ -110,6 +110,23 @@ describe('buildInputMatrix', () => {
     assert.ok(targets.every(t => t.generators.length === 1));
   });
 
+  it('build and estimate are consistent (all values per generator, capped at 3)', () => {
+    const inputs = [
+      { selector: '#email', type: 'email' },
+      { selector: '#password', type: 'password' },
+    ];
+    const targets = buildInputMatrix(inputs, { pageUrl: 'https://example.com' });
+
+    // The estimate is exactly the sum of the built targets' iterations
+    const builtTotal = targets.reduce((sum, t) => sum + t.iterations, 0);
+    assert.equal(estimateMatrixSize(inputs), builtTotal);
+
+    // Every generator contributes up to 3 values (never more, never 0)
+    assert.ok(targets.every(t => t.iterations >= 1 && t.iterations <= 3));
+    // email: 6 generators × ≤3 values each = up to 18; password: 5 × ≤3 = up to 15
+    assert.equal(estimateMatrixSize(inputs), 16 + 13);
+  });
+
   it('handles empty input list', () => {
     assert.equal(buildInputMatrix([], { pageUrl: 'https://example.com' }).length, 0);
     assert.equal(buildInputMatrix(null, { pageUrl: 'https://example.com' }).length, 0);

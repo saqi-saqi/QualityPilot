@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { hasSessionHeaders, fallbackEndpoints, normalizePath } from '../src/explorer/apiInferrer.js';
+import { hasSessionHeaders, fallbackEndpoints, normalizePath, annotateRequiredKeys } from '../src/explorer/apiInferrer.js';
 import { TestPlan, arrayElementSchema } from '../src/services/testPlan.js';
 
 const endpointSchema = arrayElementSchema(TestPlan.shape.apiEndpoints);
@@ -191,5 +191,49 @@ describe('inferApiEndpoints same-origin filter', () => {
     }];
     const { endpoints } = await inferApiEndpoints({ pages, llmOpts: { provider: { chat: async () => ({ ok: false, error: 'no llm' }) } } });
     assert.equal(endpoints.length, 1);
+  });
+});
+
+// ─── schema softening: required = observed in >= 2 responses ─────────
+
+describe('annotateRequiredKeys (soften false schema mismatches)', () => {
+  it('marks keys required only when observed in >= 2 responses', () => {
+    const endpoint = {
+      method: 'GET',
+      path: '/api/user',
+      responseSchema: {
+        type: 'object',
+        properties: { id: { type: 'number' }, name: { type: 'string' }, nickname: { type: 'string' } },
+      },
+    };
+    annotateRequiredKeys(endpoint, [
+      { responseBody: { id: 1, name: 'A', nickname: 'Nick' } },
+      { responseBody: { id: 2, name: 'B' } },               // nickname missing here
+    ]);
+    assert.deepEqual(endpoint.responseSchema.required, ['id', 'name']);
+  });
+
+  it('leaves schemas without properties / with no captured bodies untouched', () => {
+    const noProps = { method: 'GET', path: '/x', responseSchema: { type: 'array' } };
+    annotateRequiredKeys(noProps, [{ responseBody: [1] }]);
+    assert.equal(noProps.responseSchema.required, undefined);
+
+    const noBodies = { method: 'GET', path: '/y', responseSchema: { type: 'object', properties: { a: { type: 'string' } } } };
+    annotateRequiredKeys(noBodies, [{ responseBody: null }]);
+    assert.equal(noBodies.responseSchema.required, undefined);
+  });
+
+  it('ignores non-object bodies when counting observations', () => {
+    const endpoint = {
+      method: 'GET',
+      path: '/z',
+      responseSchema: { type: 'object', properties: { a: { type: 'string' }, b: { type: 'string' } } },
+    };
+    annotateRequiredKeys(endpoint, [
+      { responseBody: 'blocked by bot wall' },
+      { responseBody: { a: 'x' } },
+      { responseBody: { a: 'y', b: 'z' } },
+    ]);
+    assert.deepEqual(endpoint.responseSchema.required, ['a']);
   });
 });

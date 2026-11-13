@@ -10,6 +10,27 @@ function escapeHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/**
+ * Render a finding-derived URL safely: only http(s) may become a link
+ * (a crafted `javascript:` or `data:` URL in finding data must not execute
+ * when the report is opened); everything else renders as plain escaped
+ * text. Links that open a new tab always carry rel="noopener noreferrer".
+ */
+function renderLink(rawUrl) {
+  if (rawUrl == null || rawUrl === '') return '';
+  const text = escapeHtml(rawUrl);
+  let parsed;
+  try {
+    parsed = new URL(String(rawUrl));
+  } catch {
+    return text;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return text;
+  }
+  return `<a href="${text}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+}
+
 // Defense-in-depth: redact sensitive header values even if upstream forgot.
 // Matches the same set used in crawler.js captureApiCall().
 const SENSITIVE_HEADER_RE = /^(authorization|cookie|set-cookie|x-api-key|x-auth-token|proxy-authorization|api-key)$/i;
@@ -201,7 +222,7 @@ export function generateHtmlReport(run) {
               const pageCount = f.affectedPages ? f.affectedPages.length : 1;
               findingsHtml += `<p><em>${f.occurrences} occurrences across ${pageCount} pages</em></p>`;
             } else {
-              findingsHtml += `<p><strong>Page:</strong> <a href="${escapeHtml(f.pageUrl)}" target="_blank">${escapeHtml(f.pageUrl)}</a></p>`;
+              findingsHtml += `<p><strong>Page:</strong> ${renderLink(f.pageUrl)}</p>`;
             }
 
             if (f.description) {
@@ -225,7 +246,7 @@ export function generateHtmlReport(run) {
             if (f.affectedPages && f.affectedPages.length > 1) {
               findingsHtml += `<details><summary><strong>Affected Pages (${f.affectedPages.length})</strong></summary><ul>`;
               for (const p of f.affectedPages) {
-                findingsHtml += `<li><a href="${escapeHtml(p)}" target="_blank">${escapeHtml(p)}</a></li>`;
+                findingsHtml += `<li>${renderLink(p)}</li>`;
               }
               findingsHtml += `</ul></details>`;
             }
@@ -253,7 +274,7 @@ export function generateHtmlReport(run) {
       coverageSectionHtml += `
       <div class="finding-card" style="border-left: 4px solid #ef4444; background: #fff; margin-bottom: 12px; padding: 14px; border-radius: 4px;">
         <h4 style="margin: 0 0 8px 0;">${escapeHtml(f.title)} <span class="badge low">COVERAGE</span></h4>
-        <p style="margin: 4px 0;"><strong>Page:</strong> <a href="${escapeHtml(f.pageUrl)}" target="_blank">${escapeHtml(f.pageUrl)}</a></p>
+        <p style="margin: 4px 0;"><strong>Page:</strong> ${renderLink(f.pageUrl)}</p>
         <p style="margin: 4px 0;"><strong>Blocked executors:</strong> ${escapeHtml(blocked)}</p>
         <p style="margin: 4px 0; color: #475569;"><strong>Error:</strong> ${escapeHtml(f.description || '')}</p>
         ${f.evidence ? `<pre style="margin-top: 8px; background: #f8fafc; padding: 8px; border-radius: 4px; font-size: 12px; overflow-x: auto;">${escapeHtml(f.evidence)}</pre>` : ''}
@@ -274,7 +295,7 @@ export function generateHtmlReport(run) {
       unauthSectionHtml += `
       <div class="finding-card" style="border-left: 4px solid #f59e0b; background: #fff; margin-bottom: 12px; padding: 14px; border-radius: 4px;">
         <h4 style="margin: 0 0 8px 0;">${escapeHtml(f.title)} <span class="badge" style="background: #f59e0b; color: #fff;">SUSPECTED</span> <span class="badge origin">First-party</span></h4>
-        <p style="margin: 4px 0;"><strong>Endpoint / URL:</strong> <a href="${escapeHtml(f.pageUrl)}" target="_blank">${escapeHtml(f.pageUrl)}</a></p>
+        <p style="margin: 4px 0;"><strong>Endpoint / URL:</strong> ${renderLink(f.pageUrl)}</p>
         <p style="margin: 4px 0; color: #475569;">${escapeHtml(f.description || '')}</p>
         ${f.evidence ? `<pre style="margin-top: 8px; background: #f8fafc; padding: 8px; border-radius: 4px; font-size: 12px; overflow-x: auto;">${escapeHtml(f.evidence)}</pre>` : ''}
         ${f.suggestedFix ? `<p style="margin: 8px 0 0 0;"><strong>Suggested Fix:</strong> ${escapeHtml(f.suggestedFix)}</p>` : ''}

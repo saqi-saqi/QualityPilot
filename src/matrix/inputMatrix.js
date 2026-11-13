@@ -85,8 +85,15 @@ export function valuesForGenerator(genName) {
   return GENERATOR_VALUES[genName] || [];
 }
 
+// Max distinct values used per generator — keeps build() and estimate()
+// consistent and bounds a single form to a sane number of attempts.
+const MAX_VALUES_PER_GENERATOR = 3;
+
 /**
  * Build the full input matrix for a list of form fields.
+ *
+ * One FuzzTarget per (field, generator) pair; each target runs ALL the
+ * generator's values up to MAX_VALUES_PER_GENERATOR (via `iterations`).
  *
  * @param {Array} inputs   — list of InputField objects
  * @param {object} [opts]  — { maxPerField, maxTotal, pageUrl, formSelector }
@@ -106,15 +113,16 @@ export function buildInputMatrix(inputs, opts = {}) {
     for (const gen of generators) {
       if (perField >= maxPerField || total >= maxTotal) break;
 
-      const values = valuesForGenerator(gen);
-      const value = values[0] ?? '';  // one value per generator
+      const values = valuesForGenerator(gen).slice(0, MAX_VALUES_PER_GENERATOR);
 
       const target = {
         pageUrl,
         formSelector,
         fieldSelector: input.selector,
         generators: [gen],
-        iterations: 1,
+        // Run every selected value, not just the first — this is what makes
+        // the built matrix consistent with estimateMatrixSize().
+        iterations: Math.max(1, values.length),
         expectStatus: 'no-5xx',
       };
 
@@ -130,14 +138,15 @@ export function buildInputMatrix(inputs, opts = {}) {
 
 /**
  * Estimate the matrix size for planning / display.
- * Returns the theoretical maximum permutations.
+ * Uses the same per-generator value cap as buildInputMatrix(), so the
+ * estimate matches what the built matrix will actually run.
  */
 export function estimateMatrixSize(inputs) {
   let total = 0;
   for (const input of inputs || []) {
     const gens = generatorsForType(input.type);
     for (const gen of gens) {
-      total += valuesForGenerator(gen).length;
+      total += Math.min(valuesForGenerator(gen).length, MAX_VALUES_PER_GENERATOR);
     }
   }
   return total;

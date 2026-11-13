@@ -10,6 +10,12 @@
  *   JIRA_API_TOKEN — API token from https://id.atlassian.com/manage-profile/security/api-tokens
  *
  * Or pass via constructor.
+ *
+ * API version handling: the `description` field differs between versions.
+ * REST v3 requires Atlassian Document Format (ADF) — a JSON tree built by
+ * buildAdf() below. REST v2 accepts a plain wiki-markup string. We detect
+ * the version from the configured base URL: if it contains `rest/api/2`
+ * we speak v2 (plain strings); anything else defaults to v3 (ADF).
  */
 
 const SEVERITY_TO_PRIORITY = {
@@ -20,10 +26,54 @@ const SEVERITY_TO_PRIORITY = {
   info:     '5',  // Lowest
 };
 
+/**
+ * Build an Atlassian Document Format (ADF) document from plain text.
+ *
+ * - Text is split on blank lines (\n\n) into paragraphs.
+ * - Single newlines inside a paragraph become ADF hardBreak nodes.
+ *
+ * @param {string} text
+ * @returns {{type:'doc', version:number, content:Array}}
+ */
+export function buildAdf(text) {
+  const paragraphs = String(text ?? '')
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+
+  const content = (paragraphs.length ? paragraphs : ['']).map((paragraph) => {
+    const lines = paragraph.split('\n');
+    const nodeContent = [];
+    lines.forEach((line, i) => {
+      if (i > 0) nodeContent.push({ type: 'hardBreak' });
+      nodeContent.push({ type: 'text', text: line });
+    });
+    return { type: 'paragraph', content: nodeContent };
+  });
+
+  return { type: 'doc', version: 1, content };
+}
+
+/**
+ * Render the signed issue body for the configured API version.
+ * v2 → plain wiki-markup string (the {panel} macro); v3 → ADF document
+ * whose first paragraph carries the SQA signature.
+ */
+function renderDescription(apiVersion, signedBody, signature) {
+  if (apiVersion === 2) return signedBody;
+  const header = buildAdf(`SQA Signature\n${signature}`);
+  const body = buildAdf(signedBody);
+  return {
+    type: 'doc',
+    version: 1,
+    content: [...header.content, ...body.content],
+  };
+}
+
 export class JiraAdapter {
   /**
    * @param {object} options
-   * @param {string} options.baseUrl     — Jira Cloud base URL
+   * @param {string} options.baseUrl     — Jira base URL (may include /rest/api/2 or /rest/api/3)
    * @param {string} options.email
    * @param {string} options.apiToken
    * @param {string} options.projectKey   — e.g. 'SQA'
@@ -39,6 +89,8 @@ export class JiraAdapter {
     this.email = email;
     this.apiToken = apiToken;
     this.projectKey = projectKey;
+    // v2 accepts plain-string descriptions; v3 requires ADF.
+    this.apiVersion = /rest\/api\/2/.test(this.baseUrl) ? 2 : 3;
     this.fetch = fetchImpl || globalThis.fetch;
     if (!this.fetch) throw new Error('No fetch implementation available');
 
@@ -79,7 +131,7 @@ export class JiraAdapter {
     const jql = `project = ${this.projectKey} AND statusCategory != Done AND description ~ "${signature}" ORDER BY created DESC`;
 
     try {
-      const data = await this._api('POST', '/rest/api/3/search', {
+      const data = await this._api('POST', `/rest/api/${this.apiVersion}/search`, {
         jql,
         maxResults: 1,
         fields: ['summary', 'status', 'description', 'priority', 'labels'],
@@ -95,15 +147,16 @@ export class JiraAdapter {
 
   /**
    * Create a new Jira issue.
+   * description: ADF document for REST v3, plain string for REST v2.
    */
   async create({ title, body, labels, severity, signature }) {
     const signedBody = `{panel:title=SQA Signature|borderStyle=dashed}\n${signature}\n{panel}\n\n${body}`;
 
-    const data = await this._api('POST', '/rest/api/3/issue', {
+    const data = await this._api('POST', `/rest/api/${this.apiVersion}/issue`, {
       fields: {
         project: { key: this.projectKey },
         summary: title,
-        description: signedBody,
+        description: renderDescription(this.apiVersion, signedBody, signature),
         labels: labels || [],
         priority: { id: SEVERITY_TO_PRIORITY[severity] || SEVERITY_TO_PRIORITY.medium },
         issuetype: { name: 'Bug' },
@@ -111,22 +164,25 @@ export class JiraAdapter {
     });
 
     // Fetch the full issue to get a normalized shape
-    const full = await this._api('GET', `/rest/api/3/issue/${data.key}`);
+    const full = await this._api('GET', `/rest/api/${this.apiVersion}/issue/${data.key}`);
     return this._normalizeIssue(full);
   }
 
   /**
    * Update an existing Jira issue — add a comment + optionally update labels.
+   * Comments follow the same v2/v3 split as descriptions.
    */
   async update(issue, { labels, comment }) {
     if (comment) {
-      await this._api('POST', `/rest/api/3/issue/${issue.id}/comment`, {
-        body: { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: comment }] }] },
+      await this._api('POST', `/rest/api/${this.apiVersion}/issue/${issue.id}/comment`, {
+        body: this.apiVersion === 2
+          ? comment
+          : buildAdf(comment),
       });
     }
 
     if (labels) {
-      await this._api('PUT', `/rest/api/3/issue/${issue.id}`, {
+      await this._api('PUT', `/rest/api/${this.apiVersion}/issue/${issue.id}`, {
         fields: { labels },
       });
     }
@@ -139,7 +195,7 @@ export class JiraAdapter {
    */
   async close(issue, { reason = 'completed' } = {}) {
     // Get available transitions for this issue
-    const transitionsRes = await this._api('GET', `/rest/api/3/issue/${issue.id}/transitions`);
+    const transitionsRes = await this._api('GET', `/rest/api/${this.apiVersion}/issue/${issue.id}/transitions`);
 
     const doneTransition = transitionsRes.transitions?.find(t =>
       /^done|closed|resolved$/i.test(t.name) || t.to?.statusCategory?.key === 'done'
@@ -149,7 +205,7 @@ export class JiraAdapter {
       throw new Error(`No "Done" transition available for issue ${issue.id}`);
     }
 
-    await this._api('POST', `/rest/api/3/issue/${issue.id}/transitions`, {
+    await this._api('POST', `/rest/api/${this.apiVersion}/issue/${issue.id}/transitions`, {
       transition: { id: doneTransition.id },
     });
 
@@ -161,7 +217,7 @@ export class JiraAdapter {
    */
   async listOpen() {
     const jql = `project = ${this.projectKey} AND statusCategory != Done AND labels = "sqa-agent" ORDER BY created DESC`;
-    const data = await this._api('POST', '/rest/api/3/search', {
+    const data = await this._api('POST', `/rest/api/${this.apiVersion}/search`, {
       jql,
       maxResults: 100,
       fields: ['summary', 'status', 'description', 'priority', 'labels'],
@@ -170,6 +226,12 @@ export class JiraAdapter {
     return (data.issues || []).map(this._normalizeIssue);
   }
 
+  /**
+   * Normalize a raw Jira issue into the adapter issue shape.
+   * Note: `description` comes back as a plain string from REST v2 but as an
+   * Atlassian Document Format (ADF) JSON tree from REST v3 —
+   * extractJiraSignature() handles both shapes when pulling the signature.
+   */
   _normalizeIssue(raw) {
     return {
       id: raw.key,  // e.g. 'SQA-123'
@@ -182,23 +244,65 @@ export class JiraAdapter {
   }
 }
 
+/**
+ * Walk an ADF document and collect the text of every `text` node,
+ * joined with newlines.
+ */
+function adfToText(doc) {
+  const out = [];
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'text' && typeof node.text === 'string') {
+      out.push(node.text);
+      return;
+    }
+    if (Array.isArray(node.content)) {
+      for (const child of node.content) walk(child);
+    }
+  };
+  walk(doc);
+  return out.join('\n');
+}
+
+/**
+ * Extract the SQA signature from a Jira description.
+ *
+ * REST v2 descriptions are plain strings (wiki markup with the signature
+ * panel); REST v3 descriptions are ADF JSON trees. Both are handled here.
+ */
 function extractJiraSignature(description) {
   if (!description) return null;
-  // Description comes back as Atlassian Document Format (ADF) JSON in v3.
-  // For simplicity, we regex-match the signature from the rendered panel.
-  // Real implementation should walk the ADF tree.
+
+  // v2 / legacy: plain string with the "SQA Signature" panel
   if (typeof description === 'string') {
     const m = description.match(/SQA Signature[^{]*\n([^\n]+)/);
-    return m ? m[1].trim() : null;
+    if (m) return m[1].trim();
+    // Fallback: any line carrying a `rule::value` signature token
+    return firstSignatureToken(description.split('\n'));
   }
-  // ADF object — try to extract from content
+
+  // v3: ADF object — collect its text and find the signature token
   try {
-    const text = JSON.stringify(description);
-    const m = text.match(/ruleId::[^"]+/);
-    return m ? m[0] : null;
+    return firstSignatureToken(adfToText(description).split('\n'));
   } catch {
     return null;
   }
+}
+
+/**
+ * Find the first line that contains a `something::value` signature token
+ * and return the token (from the start of the word preceding the first `::`).
+ */
+function firstSignatureToken(lines) {
+  for (const line of lines) {
+    const idx = line.indexOf('::');
+    if (idx === -1) continue;
+    let start = idx;
+    while (start > 0 && !/\s/.test(line[start - 1])) start--;
+    const token = line.slice(start).trim();
+    if (token) return token;
+  }
+  return null;
 }
 
 export { extractJiraSignature };
