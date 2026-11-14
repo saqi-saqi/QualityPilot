@@ -18,6 +18,8 @@
  * we speak v2 (plain strings); anything else defaults to v3 (ADF).
  */
 
+import { validateAdapterUrl } from './adapterUrl.js';
+
 const SEVERITY_TO_PRIORITY = {
   critical: '1',  // Highest
   high:     '2',
@@ -86,6 +88,13 @@ export class JiraAdapter {
     if (!projectKey) throw new Error('JiraAdapter requires projectKey');
 
     this.baseUrl = baseUrl.replace(/\/$/, '');
+    // Phase 0 Fix D: fail fast on the operator-configured baseUrl — this URL
+    // receives the Basic auth header, so non-http(s) schemes (file:, data:, …)
+    // and plain http must be rejected before any request is ever built.
+    const baseUrlCheck = validateAdapterUrl(this.baseUrl);
+    if (!baseUrlCheck.ok) {
+      throw new Error(`JiraAdapter: invalid baseUrl — ${baseUrlCheck.error}`);
+    }
     this.email = email;
     this.apiToken = apiToken;
     this.projectKey = projectKey;
@@ -99,7 +108,20 @@ export class JiraAdapter {
   }
 
   async _api(method, path, body) {
+    // Paths must start with "/" (all internal API paths do). A foreign-scheme
+    // path like "file:/…" would otherwise be silently string-concatenated into
+    // `${baseUrl}file:/…` — a valid https URL for a DIFFERENT host that would
+    // still receive the Basic auth header.
+    if (!path.startsWith('/')) {
+      throw new Error(`JiraAdapter: refusing to send authenticated request — path must start with "/": "${path}"`);
+    }
     const url = `${this.baseUrl}${path}`;
+    // Second line of defense (the constructor already validated baseUrl):
+    // refuse to send authenticated requests to a URL that fails validation.
+    const urlCheck = validateAdapterUrl(url);
+    if (!urlCheck.ok) {
+      throw new Error(`JiraAdapter: refusing to send authenticated request — ${urlCheck.error}`);
+    }
     const res = await this.fetch(url, {
       method,
       headers: {

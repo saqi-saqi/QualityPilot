@@ -70,7 +70,7 @@ export function toSarif(report) {
     if (f.pageUrl) {
       result.locations = [{
         physicalLocation: {
-          artifactLocation: { uri: f.pageUrl },
+          artifactLocation: { uri: encodeURI(f.pageUrl) },
         },
       }];
     }

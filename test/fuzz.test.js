@@ -173,6 +173,22 @@ describe('fuzzApiField', () => {
     assert.match(result.error, /boom/);
   });
 
+  it('flags timeout/abort errors as environmental (Fix E2)', async () => {
+    ctx.options.fetch = async () => { throw new Error('The operation was aborted due to timeout'); };
+    const target = { apiEndpointRef: '/login', field: 'email' };
+    const result = await fuzzApiField(target, 'x', ctx);
+    assert.equal(result.threw, true);
+    assert.equal(result.environmental, true);
+  });
+
+  it('does not flag generic fetch errors as environmental (Fix E2)', async () => {
+    ctx.options.fetch = async () => { throw new Error('boom'); };
+    const target = { apiEndpointRef: '/login', field: 'email' };
+    const result = await fuzzApiField(target, 'x', ctx);
+    assert.equal(result.threw, true);
+    assert.equal(result.environmental, false);
+  });
+
   it('throws when endpoint not found', async () => {
     ctx.options.fetch = async () => ({ status: 200, headers: new Headers() });
     const target = { apiEndpointRef: '/nonexistent', field: 'email' };
@@ -439,5 +455,125 @@ describe('fuzzExecutor end-to-end', () => {
     await fuzzExecutor(ctx);
     const elapsed = Date.now() - start;
     assert.ok(elapsed >= 25, `expected at least one 30ms delay between the 2 iterations, elapsed=${elapsed}ms`);
+  });
+
+  it('classifies an API fuzz timeout as suspected/environmental, not a confirmed bug (Fix E2)', async () => {
+    ctx.plan.apiEndpoints = [{ method: 'POST', path: '/login', body: { email: 'x' } }];
+    ctx.plan.fuzzTargets = [{
+      apiEndpointRef: '/login', field: 'email',
+      generators: ['empty'], iterations: 1, expectStatus: 'no-5xx',
+    }];
+    ctx.options.allowActiveFuzz = true;
+    ctx.options.delayMs = 0;
+    ctx.options.fetch = async () => { throw new Error('The operation was aborted due to timeout'); };
+
+    const result = await fuzzExecutor(ctx);
+    assert.equal(result.findings.length, 1);
+    assert.equal(result.findings[0].ruleId, 'fuzz-environmental');
+    assert.equal(result.findings[0].findingType, 'environmental');
+    assert.equal(result.findings[0].confidence, 'suspected');
+    assert.equal(result.findings[0].severity, 'low');
+  });
+
+  it('classifies third-party console noise as INFO, not a confirmed bug (Fix E2)', async () => {
+    const local = {
+      plan: { targetUrl: 'https://example.com', apiEndpoints: [], fuzzTargets: [{
+        pageUrl: 'https://example.com/checkout',
+        fieldSelector: '#card',
+        generators: ['empty'],
+        iterations: 1,
+        expectStatus: 'no-crash',
+      }] },
+      options: {},
+      createFinding: createFindingFactory(),
+      onEvent: () => {},
+      signal: undefined,
+    };
+    local.context = {
+      newPage: async () => ({
+        goto: async () => ({ status: () => 200 }),
+        on: (event, handler) => {
+          if (event === 'console') {
+            handler({ type: () => 'error', text: () => 'Stripe widget failed', location: () => ({ url: 'https://js.stripe.com/v3/bundle.js' }) });
+          }
+        },
+        locator: () => ({ first: () => ({ fill: async () => {} }) }),
+        close: async () => {},
+      }),
+    };
+
+    const result = await fuzzExecutor(local);
+    assert.equal(result.findings.length, 1);
+    assert.equal(result.findings[0].findingType, 'informational');
+    assert.equal(result.findings[0].ruleId, 'fuzz-third-party-console');
+    assert.equal(result.findings[0].severity, 'info');
+    assert.equal(result.findings[0].origin, 'third-party');
+    // Signature-first rule: the noise is kept as a signal, NOT discarded.
+    assert.match(result.findings[0].evidence, /Stripe widget failed/);
+  });
+
+  it('keeps first-party console errors as confirmed bug signals (Fix E2)', async () => {
+    const local = {
+      plan: { targetUrl: 'https://example.com', apiEndpoints: [], fuzzTargets: [{
+        pageUrl: 'https://example.com/checkout',
+        fieldSelector: '#card',
+        generators: ['empty'],
+        iterations: 1,
+        expectStatus: 'no-crash',
+      }] },
+      options: {},
+      createFinding: createFindingFactory(),
+      onEvent: () => {},
+      signal: undefined,
+    };
+    local.context = {
+      newPage: async () => ({
+        goto: async () => ({ status: () => 200 }),
+        on: (event, handler) => {
+          if (event === 'console') {
+            handler({ type: () => 'error', text: () => 'app code blew up', location: () => ({ url: 'https://example.com/app.js' }) });
+          }
+        },
+        locator: () => ({ first: () => ({ fill: async () => {} }) }),
+        close: async () => {},
+      }),
+    };
+
+    const result = await fuzzExecutor(local);
+    assert.equal(result.findings.length, 1);
+    assert.equal(result.findings[0].ruleId, 'fuzz-failure');
+    assert.equal(result.findings[0].findingType, 'bug');
+    assert.equal(result.findings[0].confidence, 'confirmed');
+  });
+
+  it('classifies a page.goto timeout as suspected/environmental (Fix E2)', async () => {
+    const local = {
+      plan: { targetUrl: 'https://example.com', apiEndpoints: [], fuzzTargets: [{
+        pageUrl: 'https://example.com/checkout',
+        fieldSelector: '#card',
+        generators: ['empty'],
+        iterations: 1,
+        expectStatus: 'no-crash',
+      }] },
+      options: {},
+      createFinding: createFindingFactory(),
+      onEvent: () => {},
+      signal: undefined,
+    };
+    local.context = {
+      newPage: async () => ({
+        goto: async () => { throw new Error('Timeout 10000ms exceeded'); },
+        on: () => {},
+        locator: () => ({ first: () => ({ fill: async () => {} }) }),
+        close: async () => {},
+      }),
+    };
+
+    const result = await fuzzExecutor(local);
+    assert.equal(result.findings.length, 1);
+    assert.equal(result.findings[0].ruleId, 'fuzz-environmental');
+    assert.equal(result.findings[0].findingType, 'environmental');
+    assert.equal(result.findings[0].confidence, 'suspected');
+    assert.equal(result.findings[0].severity, 'low');
   });
 });

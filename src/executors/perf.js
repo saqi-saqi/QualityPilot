@@ -189,52 +189,60 @@ export async function capturePerfMetrics(page, url, opts = {}) {
     let inpObserved = false;
     let inpWorst = 0;
 
-    try {
-      const clsEntries = performance.getEntriesByType('layout-shift');
-      for (const c of clsEntries) {
-        clsObserved = true;
-        if (!c.hadRecentInput) {
-          clsSum += (c.value || 0);
+    if (buffered.length > 0) {
+      // The init-script PerformanceObserver (buffered: true) is the single
+      // source for CLS/TBT; previously the getEntriesByType('layout-shift')
+      // and getEntriesByType('longtask') loops below also ran in this case,
+      // counting the same entries twice and inflating both metrics.
+      for (const e of buffered) {
+        if ((e.entryType === 'largest-contentful-paint' || e.name === 'largest-contentful-paint') && (e.startTime || e.value) > 0) {
+          result.LCP = Math.max(result.LCP || 0, e.startTime ?? e.value);
+          result.measured.LCP = true;
+        }
+        if ((e.entryType === 'paint' && e.name === 'first-contentful-paint') && (e.startTime || e.value) > 0) {
+          result.FCP = Math.max(result.FCP || 0, e.startTime ?? e.value);
+          result.measured.FCP = true;
+        }
+        if (e.entryType === 'layout-shift' || e.name === 'layout-shift') {
+          clsObserved = true;
+          if (!e.hadRecentInput && e.value != null) {
+            clsSum += e.value;
+          }
+        }
+        if (e.entryType === 'longtask' || e.name === 'longtask') {
+          tbtObserved = true;
+          const dur = e.duration ?? e.value ?? 0;
+          tbtSum += Math.max(0, dur - 50);
+        }
+        // Event Timing entries with an interactionId are real user
+        // interactions — the worst interaction duration is our honest INP-ish
+        // approximation (real INP is a 98th-percentile over interactions).
+        if (e.entryType === 'event' && e.interactionId != null && e.interactionId > 0) {
+          inpObserved = true;
+          const dur = e.duration ?? 0;
+          if (dur > inpWorst) inpWorst = dur;
         }
       }
-    } catch {}
-
-    try {
-      const longtasks = performance.getEntriesByType('longtask');
-      for (const lt of longtasks) {
-        tbtObserved = true;
-        tbtSum += Math.max(0, (lt.duration || 0) - 50);
-      }
-    } catch {}
-
-    for (const e of buffered) {
-      if ((e.entryType === 'largest-contentful-paint' || e.name === 'largest-contentful-paint') && (e.startTime || e.value) > 0) {
-        result.LCP = Math.max(result.LCP || 0, e.startTime ?? e.value);
-        result.measured.LCP = true;
-      }
-      if ((e.entryType === 'paint' && e.name === 'first-contentful-paint') && (e.startTime || e.value) > 0) {
-        result.FCP = Math.max(result.FCP || 0, e.startTime ?? e.value);
-        result.measured.FCP = true;
-      }
-      if (e.entryType === 'layout-shift' || e.name === 'layout-shift') {
-        clsObserved = true;
-        if (!e.hadRecentInput && e.value != null) {
-          clsSum += e.value;
+    } else {
+      // Init-script fallback: the observer never buffered anything (e.g. the
+      // init script failed to run), so read the entry buffers directly.
+      try {
+        const clsEntries = performance.getEntriesByType('layout-shift');
+        for (const c of clsEntries) {
+          clsObserved = true;
+          if (!c.hadRecentInput) {
+            clsSum += (c.value || 0);
+          }
         }
-      }
-      if (e.entryType === 'longtask' || e.name === 'longtask') {
-        tbtObserved = true;
-        const dur = e.duration ?? e.value ?? 0;
-        tbtSum += Math.max(0, dur - 50);
-      }
-      // Event Timing entries with an interactionId are real user
-      // interactions — the worst interaction duration is our honest INP-ish
-      // approximation (real INP is a 98th-percentile over interactions).
-      if (e.entryType === 'event' && e.interactionId != null && e.interactionId > 0) {
-        inpObserved = true;
-        const dur = e.duration ?? 0;
-        if (dur > inpWorst) inpWorst = dur;
-      }
+      } catch {}
+
+      try {
+        const longtasks = performance.getEntriesByType('longtask');
+        for (const lt of longtasks) {
+          tbtObserved = true;
+          tbtSum += Math.max(0, (lt.duration || 0) - 50);
+        }
+      } catch {}
     }
 
     result.CLS = Number(clsSum.toFixed(3));

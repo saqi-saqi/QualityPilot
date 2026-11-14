@@ -171,7 +171,13 @@ export function shouldFail(findings, failOn) {
   }
   const threshold = SEVERITY_RANK[value];
   if (threshold === undefined) return false;
-  return findings?.some((f) => (SEVERITY_RANK[f.severity] ?? 0) >= threshold);
+  // Phase 0 Fix E3: environmental findings (timeouts / DNS / connection failures
+  // that the executors classify suspected+environmental) are not app defects and
+  // must not break a threshold gate on their own. List mode already counts only
+  // confirmed findings via evaluateGate, so it is unchanged.
+  return findings
+    ?.filter((f) => f.findingType !== 'environmental')
+    .some((f) => (SEVERITY_RANK[f.severity] ?? 0) >= threshold);
 }
 
 /**

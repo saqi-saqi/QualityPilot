@@ -356,19 +356,25 @@ export async function probeEndpoint(endpoint, ctx) {
     return { endpoint, status, durationMs, body };
   } catch (err) {
     const durationMs = Date.now() - start;
-    const isTimeout = /timeout|abort/i.test(err.message);
+    const msg = err?.message || String(err);
+    const isTimeout = /timeout|abort/i.test(msg);
+    // Phase 0 Fix E1: network-unreachable failures (refused / not-found / DNS)
+    // are environment problems, not app defects — same treatment as timeouts:
+    // suspected + environmental + low severity, never a confirmed bug.
+    const isUnreachable = /econnrefused|enotfound|eai_again|getaddrinfo|dns/i.test(msg);
+    const environmental = isTimeout || isUnreachable;
     return {
       endpoint, status: null, durationMs,
       finding: ctx.createFinding({
         title: `API ${endpoint.method} ${endpoint.path} ${isTimeout ? 'timed out' : 'failed'}`,
-        severity: isTimeout ? 'medium' : 'high',
-        confidence: 'confirmed',
+        severity: environmental ? 'low' : 'high',
+        confidence: environmental ? 'suspected' : 'confirmed',
         category: 'network',
-        findingType: isTimeout ? 'environmental' : 'bug',
+        findingType: environmental ? 'environmental' : 'bug',
         origin: 'first-party',
         ruleId: isTimeout ? 'api-timeout' : 'api-error',
         pageUrl: url,
-        description: err.message,
+        description: msg,
         evidence: `URL: ${url}\nMethod: ${endpoint.method}\nDuration: ${durationMs}ms`,
         suggestedFix: isTimeout
           ? 'Increase the per-request timeout or investigate endpoint latency.'

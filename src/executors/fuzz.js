@@ -118,7 +118,16 @@ export async function fuzzApiField(target, value, ctx) {
     clearTimeout(timer);
     return { status: response.status, threw: false };
   } catch (err) {
-    return { status: null, threw: true, error: err.message };
+    const msg = err?.message || String(err);
+    // Phase 0 Fix E2: timeout/abort/DNS failures are flagged here so the
+    // finding-creation path can classify them suspected/environmental instead
+    // of confirmed bugs. Genuine 5xx/crash outcomes are unaffected.
+    return {
+      status: null,
+      threw: true,
+      error: msg,
+      environmental: /timeout|abort|econnrefused|enotfound|eai_again|getaddrinfo|dns/i.test(msg),
+    };
   }
 }
 
@@ -146,7 +155,14 @@ export async function fuzzFormField(target, value, ctx) {
     if (typeof page.on === 'function') {
       page.on('pageerror', error => pageErrors.push(error?.message || String(error)));
       page.on('console', message => {
-        if (message?.type?.() === 'error') consoleErrors.push(message.text?.() || 'Console error');
+        if (message?.type?.() === 'error') {
+          // Phase 0 Fix E2: also capture the script URL that logged the error
+          // (message.location) so third-party-origin console noise can be
+          // classified INFO instead of a confirmed bug.
+          let url = null;
+          try { url = message.location?.()?.url ?? null; } catch {}
+          consoleErrors.push({ text: message.text?.() || 'Console error', url });
+        }
       });
       page.on('response', response => {
         try {
@@ -172,10 +188,34 @@ export async function fuzzFormField(target, value, ctx) {
     }
 
     if (pageErrors.length || consoleErrors.length) {
+      // Phase 0 Fix E2 — signature-first console classification: pageerror is
+      // page-level (first-party by origin) and stays an error signal. Console
+      // errors are attributed to the script URL that logged them; third-party
+      // console noise is demoted to INFO (kept, NOT discarded — payment/auth
+      // widget noise can matter) unless a first-party error is also present.
+      const siteOrigin = (() => { try { return new URL(target.pageUrl).origin; } catch { return null; } })();
+      const isThirdParty = (u) => {
+        if (!u || !siteOrigin) return false;
+        try { return new URL(u).origin !== siteOrigin; } catch { return false; }
+      };
+      const thirdParty = consoleErrors.filter((e) => isThirdParty(e.url));
+      const firstParty = consoleErrors.filter((e) => !isThirdParty(e.url));
+      if (pageErrors.length === 0 && firstParty.length === 0 && thirdParty.length > 0) {
+        return {
+          status: responseStatus,
+          threw: false,
+          info: true,
+          error: thirdParty.map((e) => `[third-party] ${e.text}`).join('\n'),
+        };
+      }
       return {
         status: responseStatus,
         threw: true,
-        error: [...pageErrors, ...consoleErrors].join('\n'),
+        error: [
+          ...pageErrors,
+          ...firstParty.map((e) => e.text),
+          ...thirdParty.map((e) => `[third-party] ${e.text}`),
+        ].join('\n'),
       };
     }
     return { status: responseStatus, threw: false };
@@ -183,7 +223,13 @@ export async function fuzzFormField(target, value, ctx) {
     if (/locator|selector|element.*not found/i.test(error?.message || '')) {
       return { status: responseStatus, threw: false, skipped: true, reason: 'selector-not-found' };
     }
-    return { status: responseStatus, threw: true, error: error?.message || String(error) };
+    const msg = error?.message || String(error);
+    // Phase 0 Fix E2: a page.goto timeout / DNS failure is environmental, not
+    // an app bug — flag it for suspected/environmental classification.
+    if (/timeout|abort|econnrefused|enotfound|eai_again|getaddrinfo|dns/i.test(msg)) {
+      return { status: responseStatus, threw: true, environmental: true, error: msg };
+    }
+    return { status: responseStatus, threw: true, error: msg };
   } finally {
     await page.close().catch(() => {});
   }
@@ -241,25 +287,52 @@ export default async function fuzzExecutor(ctx) {
       }
 
       const acceptable = isAcceptableOutcome(result.status, result.threw, target.expectStatus);
-      if (!acceptable) {
+      if (result.info) {
+        // Phase 0 Fix E2: third-party console noise is kept as an INFO signal —
+        // never silently discarded, but not a confirmed bug either.
+        const targetRef = `${target.pageUrl} ${target.fieldSelector}`;
+        findings.push(ctx.createFinding({
+          title: `Fuzz: ${targetRef} (${inputs[i].generator}) — third-party console noise`,
+          severity: 'info',
+          confidence: 'confirmed',
+          category: 'network',
+          findingType: 'informational',
+          origin: 'third-party',
+          ruleId: 'fuzz-third-party-console',
+          pageUrl: target.pageUrl || target.apiEndpointRef,
+          description: `A third-party script logged a console error while the field was exercised: ${result.error}`,
+          evidence: `Generator: ${inputs[i].generator}\nValue: ${inputs[i].value.slice(0, 200)}\nConsole: ${result.error}`,
+          suggestedFix: 'Third-party widget noise — verify the widget still works on the affected page; not an app defect by itself.',
+        }));
+      } else if (!acceptable) {
         failures++;
+        // Phase 0 Fix E2: timeout/connection/DNS failures are environmental
+        // (suspected, low severity, distinct ruleId) — real 5xx/crash failures
+        // keep the original confirmed-bug classification unchanged.
+        const environmental = result.environmental === true;
         const targetRef = target.apiEndpointRef
           ? `${target.apiEndpointRef}.${target.field}`
           : `${target.pageUrl} ${target.fieldSelector}`;
         findings.push(ctx.createFinding({
-          title: `Fuzz: ${targetRef} (${inputs[i].generator}) caused ${result.threw ? 'crash' : `HTTP ${result.status}`}`,
-          severity: result.threw || (result.status && result.status >= 500) ? 'high' : 'medium',
-          confidence: 'confirmed',
+          title: `Fuzz: ${targetRef} (${inputs[i].generator}) caused ${environmental ? 'environmental failure' : result.threw ? 'crash' : `HTTP ${result.status}`}`,
+          severity: environmental ? 'low' : (result.threw || (result.status && result.status >= 500) ? 'high' : 'medium'),
+          confidence: environmental ? 'suspected' : 'confirmed',
           category: 'network',
-          findingType: 'bug',
+          findingType: environmental ? 'environmental' : 'bug',
           origin: 'first-party',
-          ruleId: 'fuzz-failure',
+          ruleId: environmental ? 'fuzz-environmental' : 'fuzz-failure',
           pageUrl: target.pageUrl || target.apiEndpointRef,
-          description: target.apiEndpointRef
-            ? `Endpoint ${target.apiEndpointRef} field "${target.field}" failed when given value from generator "${inputs[i].generator}".`
-            : `Form field "${target.fieldSelector}" on ${target.pageUrl} failed when given value from generator "${inputs[i].generator}".`,
+          description: environmental
+            ? (target.apiEndpointRef
+              ? `Endpoint ${target.apiEndpointRef} field "${target.field}" could not be exercised (timeout/connection/DNS failure) with generator "${inputs[i].generator}" — environmental, not an app defect.`
+              : `Form field "${target.fieldSelector}" on ${target.pageUrl} could not be exercised (timeout/connection/DNS failure) with generator "${inputs[i].generator}" — environmental, not an app defect.`)
+            : (target.apiEndpointRef
+              ? `Endpoint ${target.apiEndpointRef} field "${target.field}" failed when given value from generator "${inputs[i].generator}".`
+              : `Form field "${target.fieldSelector}" on ${target.pageUrl} failed when given value from generator "${inputs[i].generator}".`),
           evidence: `Generator: ${inputs[i].generator}\nValue: ${inputs[i].value.slice(0, 200)}\nStatus: ${result.status ?? 'n/a'}\nError: ${result.error || 'n/a'}`,
-          suggestedFix: 'Validate + sanitize the field on the server side. Reject malformed input with 400 instead of crashing or returning 5xx.',
+          suggestedFix: environmental
+            ? 'Re-run when the target environment is healthy; if it persists, check reachability (DNS/firewall) or raise the timeout.'
+            : 'Validate + sanitize the field on the server side. Reject malformed input with 400 instead of crashing or returning 5xx.',
         }));
       }
 

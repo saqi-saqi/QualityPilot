@@ -15,6 +15,8 @@
  * before throttling. For larger runs, batch + retry-on-202.
  */
 
+import { validateAdapterUrl } from './adapterUrl.js';
+
 const GITHUB_API = 'https://api.github.com';
 
 const DEFAULT_HEADERS = {
@@ -47,7 +49,21 @@ export class GitHubAdapter {
     if (!this.token) {
       throw new Error('GITHUB_TOKEN not set. Set SQA_GITHUB_TOKEN (or legacy GITHUB_TOKEN) in env, or pass token to constructor.');
     }
-    const url = path.startsWith('http') ? path : `${GITHUB_API}${path}`;
+    // Phase 0 Fix D: validate before credentials go out. Absolute URLs appear
+    // for pagination (Link headers) and must stay allowed — https ones pass.
+    // A relative path must start with "/"; anything else (e.g. a "file:" path,
+    // which the old startsWith('http') heuristic silently string-concatenated
+    // into `${GITHUB_API}file:/…` — a valid https URL for a DIFFERENT host) is
+    // rejected before the Authorization header is attached.
+    const isAbsolute = /^https?:\/\//.test(path);
+    if (!isAbsolute && !path.startsWith('/')) {
+      throw new Error(`GitHubAdapter: refusing to send authenticated request — path must be an absolute https:// URL or start with "/": "${path}"`);
+    }
+    const url = isAbsolute ? path : `${GITHUB_API}${path}`;
+    const urlCheck = validateAdapterUrl(url);
+    if (!urlCheck.ok) {
+      throw new Error(`GitHubAdapter: refusing to send authenticated request — ${urlCheck.error}`);
+    }
     const res = await this.fetch(url, {
       method,
       headers: {

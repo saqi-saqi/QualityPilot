@@ -196,7 +196,11 @@ describe('apiContract executor', () => {
     assert.equal(result.findings[0].ruleId, 'api-schema-mismatch');
   });
 
-  it('emits finding on network error', async () => {
+  // Phase 0 Fix E1: this test previously asserted severity 'high' with an
+  // implicit confidence 'confirmed' for ECONNREFUSED — the old behavior the
+  // reviewed bug list flagged (environmental failures created as confirmed
+  // bugs). The classification changed deliberately; the assertions follow.
+  it('emits finding on network error, classified suspected/environmental (Fix E1)', async () => {
     ctx.options.fetch = makeMockFetch([
       { url: '/users/42', method: 'GET', throw: 'ECONNREFUSED' },
     ]);
@@ -209,8 +213,22 @@ describe('apiContract executor', () => {
 
     const result = await apiContract(ctx);
     assert.equal(result.findings.length, 1);
-    assert.equal(result.findings[0].severity, 'high');
+    assert.equal(result.findings[0].severity, 'low');
+    assert.equal(result.findings[0].confidence, 'suspected');
+    assert.equal(result.findings[0].findingType, 'environmental');
     assert.equal(result.findings[0].ruleId, 'api-error');
+  });
+
+  it('classifies a request timeout as suspected/environmental, not a confirmed bug (Fix E1)', async () => {
+    ctx.options.fetch = async () => { throw new Error('TimeoutError: The operation was aborted due to timeout'); };
+    ctx.plan.apiEndpoints = [{ method: 'GET', path: '/slow', expectedStatus: 200 }];
+
+    const result = await apiContract(ctx);
+    assert.equal(result.findings.length, 1);
+    assert.equal(result.findings[0].ruleId, 'api-timeout');
+    assert.equal(result.findings[0].confidence, 'suspected');
+    assert.equal(result.findings[0].findingType, 'environmental');
+    assert.equal(result.findings[0].severity, 'low');
   });
 
   it('sends POST body for POST endpoints', async () => {

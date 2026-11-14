@@ -171,6 +171,43 @@ describe('check evaluateGate', () => {
     assert.equal(shouldFail([{ severity: 'medium' }], 'none'), false);
     assert.equal(shouldFail([], 'high'), false);
   });
+
+  it('threshold mode ignores environmental findings (Fix E3)', () => {
+    assert.equal(
+      shouldFail([{ severity: 'critical', confidence: 'suspected', findingType: 'environmental' }], 'critical'),
+      false,
+      'an environmental failure alone must not break a threshold gate',
+    );
+    const gate = evaluateGate({
+      findings: [{ severity: 'critical', confidence: 'suspected', findingType: 'environmental' }],
+      failOn: 'critical',
+    });
+    assert.equal(gate.failed, false);
+    // A confirmed bug at the threshold still fails, even beside environmental noise.
+    assert.equal(
+      shouldFail([
+        { severity: 'critical', findingType: 'environmental' },
+        { severity: 'high', confidence: 'confirmed', findingType: 'bug' },
+      ], 'high'),
+      true,
+    );
+  });
+
+  it('list mode still counts only confirmed findings (unchanged by Fix E3)', () => {
+    const gate = evaluateGate({
+      findings: [
+        { severity: 'critical', confidence: 'suspected', findingType: 'environmental' },
+        { severity: 'high', confidence: 'suspected' },
+      ],
+      failOn: 'critical,high',
+    });
+    assert.equal(gate.failed, false);
+    const gate2 = evaluateGate({
+      findings: [{ severity: 'critical', confidence: 'confirmed', findingType: 'bug' }],
+      failOn: 'critical,high',
+    });
+    assert.equal(gate2.failed, true);
+  });
 });
 
 // ─── writeReportFiles (tmp artifacts) ────────────────────────────────

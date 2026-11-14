@@ -30,7 +30,7 @@ const DEFAULT_USER_AGENT =
  */
 function launchArgs({ hostResolverRules, hasProxy } = {}) {
   const args = ['--disable-setuid-sandbox', '--disable-dev-shm-usage'];
-  if (config?.chromiumNoSandbox !== false) {
+  if (config?.chromiumNoSandbox === true) {
     args.unshift('--no-sandbox');
   }
   if (hostResolverRules) {

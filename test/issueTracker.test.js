@@ -564,3 +564,109 @@ describe('JiraAdapter', () => {
     assert.equal(extractJiraSignature(null), null);
   });
 });
+
+// ─── adapter URL validation (Phase 0 Fix D) ──────────────────────────
+
+describe('JiraAdapter URL validation', () => {
+  const ENV_KEY = 'SQA_ALLOW_INSECURE_ADAPTER_HTTP';
+  let savedEnv;
+
+  beforeEach(() => {
+    savedEnv = process.env[ENV_KEY];
+    delete process.env[ENV_KEY];
+  });
+
+  afterEach(() => {
+    if (savedEnv === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = savedEnv;
+  });
+
+  const creds = { email: 'a@b.com', apiToken: 'tok', projectKey: 'SQA' };
+
+  it('rejects a file:// baseUrl at construction', () => {
+    assert.throws(
+      () => new JiraAdapter({ baseUrl: 'file:///etc/jira', ...creds }),
+      /only http\/https are allowed/i,
+    );
+  });
+
+  it('rejects a plain http baseUrl unless the insecure-HTTP opt-out is set', () => {
+    assert.throws(
+      () => new JiraAdapter({ baseUrl: 'http://jira.lan:8080', ...creds }),
+      /plain http is not allowed/i,
+    );
+    process.env[ENV_KEY] = '1';
+    const adapter = new JiraAdapter({ baseUrl: 'http://jira.lan:8080', ...creds });
+    assert.equal(adapter.baseUrl, 'http://jira.lan:8080');
+  });
+
+  it('refuses to send an authenticated request to a non-http(s) URL in _api', async () => {
+    // Build a valid adapter, then corrupt baseUrl afterwards to prove the
+    // _api guard does not trust the constructor alone.
+    const adapter = new JiraAdapter({
+      baseUrl: 'https://x.atlassian.net',
+      ...creds,
+      fetch: async () => { throw new Error('fetch must not be called'); },
+    });
+    adapter.baseUrl = 'file:///etc/passwd';
+    await assert.rejects(() => adapter.search({ signature: 'sig' }), /refusing to send/i);
+  });
+
+  it('refuses a foreign-scheme path in _api instead of string-concatenating it', async () => {
+    const adapter = new JiraAdapter({
+      baseUrl: 'https://x.atlassian.net',
+      ...creds,
+      fetch: async () => { throw new Error('fetch must not be called'); },
+    });
+    await assert.rejects(() => adapter._api('GET', 'file:/etc/passwd'), /refusing to send/i);
+  });
+});
+
+describe('GitHubAdapter URL validation', () => {
+  const ENV_KEY = 'SQA_ALLOW_INSECURE_ADAPTER_HTTP';
+  let savedEnv;
+
+  beforeEach(() => {
+    savedEnv = process.env[ENV_KEY];
+    delete process.env[ENV_KEY];
+  });
+
+  afterEach(() => {
+    if (savedEnv === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = savedEnv;
+  });
+
+  const mockJson = { status: 200, headers: new Headers(), async json() { return {}; } };
+
+  it('rejects a foreign-scheme path outright instead of string-concatenating it', async () => {
+    let called = 0;
+    const adapter = new GitHubAdapter({
+      repo: 'o/r',
+      token: 'tok',
+      fetch: async () => { called += 1; return mockJson; },
+    });
+    await assert.rejects(() => adapter._api('GET', 'file:///etc/passwd'), /refusing to send/i);
+    assert.equal(called, 0);
+  });
+
+  it('rejects a plain http absolute URL unless opted out', async () => {
+    const adapter = new GitHubAdapter({ repo: 'o/r', token: 'tok', fetch: async () => mockJson });
+    await assert.rejects(
+      () => adapter._api('GET', 'http://insecure.example.test/page/2'),
+      /plain http is not allowed/i,
+    );
+    process.env[ENV_KEY] = '1';
+    await adapter._api('GET', 'http://insecure.example.test/page/2');
+  });
+
+  it('keeps absolute https URLs (GitHub pagination) working', async () => {
+    const urls = [];
+    const adapter = new GitHubAdapter({
+      repo: 'o/r',
+      token: 'tok',
+      fetch: async (url) => { urls.push(String(url)); return mockJson; },
+    });
+    await adapter._api('GET', 'https://api.github.com/repos/o/r/issues?page=2');
+    assert.equal(urls[0], 'https://api.github.com/repos/o/r/issues?page=2');
+  });
+});
