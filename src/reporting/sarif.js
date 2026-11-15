@@ -84,7 +84,7 @@ export function toSarif(report) {
       tool: {
         driver: {
           name: 'QualityPilot',
-          informationUri: 'https://github.com/saqi-saqi/SQA_Agent',
+          informationUri: 'https://github.com/saqi-saqi/QualityPilot',
           rules: [...rules.values()],
         },
       },

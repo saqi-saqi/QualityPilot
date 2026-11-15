@@ -6,11 +6,11 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/saqi-saqi/SQA_Agent.git"
+    "url": "git+https://github.com/saqi-saqi/QualityPilot.git"
   },
-  "homepage": "https://github.com/saqi-saqi/SQA_Agent#readme",
+  "homepage": "https://github.com/saqi-saqi/QualityPilot#readme",
   "bugs": {
-    "url": "https://github.com/saqi-saqi/SQA_Agent/issues"
+    "url": "https://github.com/saqi-saqi/QualityPilot/issues"
   },
   "keywords": [
     "testing",

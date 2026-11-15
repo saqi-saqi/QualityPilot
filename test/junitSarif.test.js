@@ -182,7 +182,7 @@ describe('toSarif', () => {
     assert.equal(sarif.$schema, 'https://json.sarif.org/schema/2.1.0/sarif-schema.json');
     assert.equal(sarif.runs.length, 1);
     assert.equal(sarif.runs[0].tool.driver.name, 'QualityPilot');
-    assert.equal(sarif.runs[0].tool.driver.informationUri, 'https://github.com/saqi-saqi/SQA_Agent');
+    assert.equal(sarif.runs[0].tool.driver.informationUri, 'https://github.com/saqi-saqi/QualityPilot');
   });
 
   it('maps every finding to a result with locations and fingerprints', () => {

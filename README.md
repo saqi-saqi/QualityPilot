@@ -28,8 +28,8 @@ on the first explicit install step above.
 **From source (development):**
 
 ```bash
-git clone https://github.com/saqi-saqi/SQA_Agent.git
-cd SQA_Agent
+git clone https://github.com/saqi-saqi/QualityPilot.git
+cd QualityPilot
 npm install
 npx playwright install --with-deps chromium
 ```
