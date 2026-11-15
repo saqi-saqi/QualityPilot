@@ -271,6 +271,28 @@ npm run check -- https://staging.example.com --max-pages 10 --fail-on critical,h
 - `--min-score 80` → exit 1 when the quality score drops below 80.
 - JUnit XML and SARIF 2.1.0 output plug into GitHub Actions, GitLab, Azure DevOps, and code-scanning UIs.
 
+## 📦 Export Your Tests
+
+One plan, two destinations:
+
+```bash
+qualitypilot export plan.json --format both --out ./export
+```
+
+- **`plan.json`** — the portable plan artifact. Feed it to CI plan replay:
+  inferred once, replayed forever without an AI key. The plan is
+  schema-validated and normalized on export — what you export is exactly
+  what replays.
+- **`<flow>.spec.ts` + `qualitypilot-healer.ts`** — standalone Playwright
+  specs. Interaction steps (click/fill/select/check/…) route through the
+  self-healing selector ladder; `${VAR}` test-data placeholders resolve from
+  the environment at runtime. Multi-role: pass
+  `--storage-state user=states/user.json` to wrap flows in per-role
+  `test.describe` blocks with `test.use({ storageState })`.
+
+Scope: flows only — perf budgets, a11y rules, fuzz targets and visual
+baselines stay QualityPilot-native (they need the runtime).
+
 ## 📋 Publish Results Where QA Lives
 
 - **TestRail**: `SQA_TESTRAIL_*` env vars + `data/testrail-map.json` (`{"ruleId::pageUrl": caseId}`) → creates a run and posts pass/fail per case. Unmapped findings are listed, never auto-created.

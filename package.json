@@ -69,5 +69,8 @@
   },
   "optionalDependencies": {
     "z-ai-web-dev-sdk": "^0.0.18"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
   }
 }

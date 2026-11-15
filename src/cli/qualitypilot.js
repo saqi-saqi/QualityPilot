@@ -24,10 +24,19 @@ if (command === 'check') {
   // checkMain expects an argv shaped like [node, script, ...args].
   const result = await checkMain(['qualitypilot', 'check', ...args.slice(1)]);
   process.exitCode = result;
+} else if (command === 'export') {
+  const { exportMain } = await import('./export.js');
+  process.exitCode = await exportMain(['qualitypilot', 'export', ...args.slice(1)]);
 } else {
-  console.error('Usage: qualitypilot check <url> [options]');
+  console.error('Usage: qualitypilot <command> [options]');
   console.error('');
-  console.error('Options:');
+  console.error('Commands:');
+  console.error('  check <url> [options]      CI quality-gate scan');
+  console.error('  export <plan.json>         export a plan for CI replay or standalone Playwright');
+  console.error('                             [--format plan|specs|both] [--out <dir>]');
+  console.error('                             [--storage-state <role>=<path>]');
+  console.error('');
+  console.error('Check options:');
   console.error('  --fail-on <sev|list>   single severity = threshold ("at or above");');
   console.error('                         comma list = confirmed findings at those severities');
   console.error('  --min-score <n>        fail when the score is below n (0-100)');
