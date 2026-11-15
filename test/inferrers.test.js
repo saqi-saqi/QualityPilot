@@ -189,7 +189,7 @@ describe('buildEvidenceReport (dashboard evidence export)', () => {
     const report = buildEvidenceReport(run, { axeVersion: '4.13.0', now: '2026-01-01T00:00:00.000Z' });
 
     assert.equal(report.generatedAt, '2026-01-01T00:00:00.000Z');
-    assert.equal(report.tool.name, 'TestFlow');
+    assert.equal(report.tool.name, 'QualityPilot');
     assert.equal(report.tool.versions.node, process.version);
     assert.equal(report.tool.versions.axe, '4.13.0');
 

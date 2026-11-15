@@ -126,7 +126,7 @@ export function toJUnitXml(report) {
     if (!groups.has(name)) groups.set(name, []);
     groups.get(name).push(f);
   }
-  if (groups.size === 0) groups.set('sqa-agent', []);
+  if (groups.size === 0) groups.set('qualitypilot', []);
 
   const suites = [...groups.entries()]
     .map(([name, fs]) => suiteXml(name, fs, report));

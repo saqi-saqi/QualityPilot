@@ -5,7 +5,7 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 /**
- * Unified configuration — merges qagent defaults with SQA-agent extensions.
+ * Unified configuration — merges qagent defaults with QualityPilot extensions.
  *
  * Reads from process.env with sensible defaults for local development.
  * SQA_* prefixed vars take precedence over generic ones when both exist.

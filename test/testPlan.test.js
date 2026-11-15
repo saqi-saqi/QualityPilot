@@ -19,7 +19,7 @@ describe('TestPlan schema', () => {
   it('parses a minimal draft plan with defaults', () => {
     const plan = parseTestPlan(minimal);
     assert.equal(plan.status, 'draft');
-    assert.equal(plan.generatedBy, 'sqa-agent-explorer');
+    assert.equal(plan.generatedBy, 'qualitypilot-explorer');
     assert.deepEqual(plan.pages, []);
     assert.deepEqual(plan.flows, []);
     assert.deepEqual(plan.apiEndpoints, []);

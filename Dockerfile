@@ -1,6 +1,6 @@
-# TestFlow — Autonomous SQA Agent
-# Build:  docker build -t testflow .
-# Run:    docker run -p 8080:8080 --env-file .env -v "$(pwd)/data:/app/data" testflow
+# QualityPilot — Autonomous QualityPilot
+# Build:  docker build -t qualitypilot .
+# Run:    docker run -p 8080:8080 --env-file .env -v "$(pwd)/data:/app/data" qualitypilot
 
 FROM node:20-slim
 

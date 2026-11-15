@@ -148,7 +148,7 @@ describe('IssueTrackerPublisher — fine vs coarse signature dedup', () => {
       search: async ({ ruleId, signature }) => {
         calls.search.push({ ruleId, signature });
         if (opts.matchSignatures?.includes(signature)) {
-          return { id: 'LEGACY-1', url: 'mock://1', state: 'open', title: 'Existing', labels: ['sqa-agent'] };
+          return { id: 'LEGACY-1', url: 'mock://1', state: 'open', title: 'Existing', labels: ['qualitypilot'] };
         }
         return null;
       },
@@ -255,9 +255,9 @@ describe('IssueTrackerPublisher — auto-close coverage guard', () => {
   it('closes issues only on pages visited this run', async () => {
     const adapter = makeCloseAdapter([
       // rule not present in this run, but its page WAS visited → close
-      { id: 1, state: 'open', title: 'Gone', labels: ['sqa-agent'], _signature: 'r9::https://example.com/visited' },
+      { id: 1, state: 'open', title: 'Gone', labels: ['qualitypilot'], _signature: 'r9::https://example.com/visited' },
       // page NOT visited this run → must survive (coverage guard)
-      { id: 2, state: 'open', title: 'Real bug on unvisited page', labels: ['sqa-agent'], _signature: 'r2::https://example.com/not-crawled' },
+      { id: 2, state: 'open', title: 'Real bug on unvisited page', labels: ['qualitypilot'], _signature: 'r2::https://example.com/not-crawled' },
     ]);
     const publisher = new IssueTrackerPublisher({ adapter, options: { closeResolved: true } });
 
@@ -274,7 +274,7 @@ describe('IssueTrackerPublisher — auto-close coverage guard', () => {
 
   it('keeps a legacy coarse issue open while its finding still re-occurs', async () => {
     const adapter = makeCloseAdapter([
-      { id: 3, state: 'open', title: 'Legacy', labels: ['sqa-agent'], _signature: 'r1::https://example.com/visited' },
+      { id: 3, state: 'open', title: 'Legacy', labels: ['qualitypilot'], _signature: 'r1::https://example.com/visited' },
     ]);
     const publisher = new IssueTrackerPublisher({ adapter, options: { closeResolved: true } });
     const result = await publisher.publish([visitedFinding], {
@@ -287,7 +287,7 @@ describe('IssueTrackerPublisher — auto-close coverage guard', () => {
 
   it('supports page objects and Sets in coveredPages', async () => {
     const adapter = makeCloseAdapter([
-      { id: 1, state: 'open', title: 'Gone', labels: ['sqa-agent'], _signature: 'r1::https://example.com/visited' },
+      { id: 1, state: 'open', title: 'Gone', labels: ['qualitypilot'], _signature: 'r1::https://example.com/visited' },
     ]);
     const publisher = new IssueTrackerPublisher({ adapter, options: { closeResolved: true } });
     await publisher.publish([], {
@@ -299,7 +299,7 @@ describe('IssueTrackerPublisher — auto-close coverage guard', () => {
 
   it('skips the whole sweep when the run has no coverage info', async () => {
     const adapter = makeCloseAdapter([
-      { id: 1, state: 'open', title: 'Should survive', labels: ['sqa-agent'], _signature: 'r9::https://example.com/anywhere' },
+      { id: 1, state: 'open', title: 'Should survive', labels: ['qualitypilot'], _signature: 'r9::https://example.com/anywhere' },
     ]);
     const publisher = new IssueTrackerPublisher({ adapter, options: { closeResolved: true } });
 
@@ -312,7 +312,7 @@ describe('IssueTrackerPublisher — auto-close coverage guard', () => {
 
   it('partial scans (uncovered pages) never close real bugs', async () => {
     const adapter = makeCloseAdapter([
-      { id: 9, state: 'open', title: 'Partial-scan survivor', labels: ['sqa-agent'], _signature: 'r2::https://example.com/not-crawled' },
+      { id: 9, state: 'open', title: 'Partial-scan survivor', labels: ['qualitypilot'], _signature: 'r2::https://example.com/not-crawled' },
     ]);
     const publisher = new IssueTrackerPublisher({ adapter, options: { closeResolved: true } });
     const result = await publisher.publish([visitedFinding], {
@@ -441,7 +441,7 @@ describe('JiraAdapter v2/v3 descriptions', () => {
     });
     assert.equal(adapter.apiVersion, 3);
 
-    await adapter.create({ title: 'T', body: 'Body line 1\n\nBody line 2', labels: ['sqa-agent'], severity: 'high', signature: 'sig::url' });
+    await adapter.create({ title: 'T', body: 'Body line 1\n\nBody line 2', labels: ['qualitypilot'], severity: 'high', signature: 'sig::url' });
 
     const desc = calls[0].body.fields.description;
     assert.equal(desc.type, 'doc');
@@ -658,7 +658,7 @@ describe('XrayAdapter.publishRunResults', () => {
     const imp = calls[1];
     assert.equal(imp.url, 'https://xray.cloud.getxray.app/api/v2/import/execution');
     assert.equal(imp.headers.Authorization, 'Bearer JWT_TOKEN');
-    assert.equal(imp.body.info.summary, 'SQA Agent — run run_88');
+    assert.equal(imp.body.info.summary, 'QualityPilot — run run_88');
     assert.equal(imp.body.info.start, run.startedAt);
     assert.equal(imp.body.info.finish, run.completedAt);
     const byTest = Object.fromEntries(imp.body.tests.map((t) => [t.testKey, t.status]));

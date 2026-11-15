@@ -38,10 +38,10 @@ export function createFixtureApp() {
     next();
   });
 
-  // 1. Timeout route: deliberately hangs past TestFlow timeout to test page-load failure handling
+  // 1. Timeout route: deliberately hangs past QualityPilot timeout to test page-load failure handling
   app.get('/page-timeout.html', (req, res) => {
     // Deliberately hold request open; do not respond
-    // Playwright/TestFlow page.goto will time out
+    // Playwright/QualityPilot page.goto will time out
   });
 
   // 2. Heavy asset route: delivers 3.84 MB binary BMP image asset
@@ -52,7 +52,7 @@ export function createFixtureApp() {
   });
 
   // 3. API Route 4: ALWAYS returns 400 regardless of auth / session
-  // TestFlow must NOT bucket this as SUSPECTED/unauthenticated — it is a confirmed bug
+  // QualityPilot must NOT bucket this as SUSPECTED/unauthenticated — it is a confirmed bug
   app.get('/api/always-400', (req, res) => {
     res.status(400).json({
       error: 'Bad Request',
@@ -62,7 +62,7 @@ export function createFixtureApp() {
   });
 
   // 4. API Route 5: returns 400 WITHOUT session cookie, 200 WITH one
-  // TestFlow categorization logic must identify this specific pattern as SUSPECTED / unauthenticated
+  // QualityPilot categorization logic must identify this specific pattern as SUSPECTED / unauthenticated
   app.get('/api/needs-session', (req, res) => {
     const cookieHeader = req.headers.cookie || '';
     const authHeader = req.headers.authorization || '';
@@ -127,7 +127,7 @@ export function startFixtureServer(port = 0) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const cliPort = parseInt(process.env.FIXTURE_PORT || '3333', 10);
   startFixtureServer(cliPort).then(({ url }) => {
-    console.log(`TestFlow Fixture Server listening at ${url}`);
+    console.log(`QualityPilot Fixture Server listening at ${url}`);
     console.log(`Press Ctrl+C to terminate.`);
   }).catch((err) => {
     console.error(`Failed to start fixture server:`, err);

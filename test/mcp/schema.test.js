@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 
-process.env.TESTFLOW_DB_PATH = fs.mkdtempSync(path.join(os.tmpdir(), 'testflow-mcp-')) + '/test.sqlite';
+process.env.QUALITYPILOT_DB_PATH = fs.mkdtempSync(path.join(os.tmpdir(), 'qualitypilot-mcp-')) + '/test.sqlite';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -31,7 +31,7 @@ async function call(name, args) {
 }
 
 before(async () => {
-  const server = new McpServer({ name: 'testflow-test', version: '0.0.0' });
+  const server = new McpServer({ name: 'qualitypilot-test', version: '0.0.0' });
   for (const tool of TOOL_DEFS) {
     server.registerTool(tool.name, {
       description: tool.description,
@@ -132,7 +132,7 @@ describe('SSRF boundary parity (MCP path === regular scan path)', () => {
 });
 
 describe('explain_finding', () => {
-  it('explains a TestFlow rule ID', async () => {
+  it('explains a QualityPilot rule ID', async () => {
     const res = await call('explain_finding', { rule_id: 'api-status-mismatch' });
     const body = JSON.parse(res.content[0].text);
     assert.equal(body.known, true);

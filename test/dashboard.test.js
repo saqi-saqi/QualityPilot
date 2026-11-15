@@ -12,9 +12,9 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 // Seed SQLite in a temp dir (like storage.test.js does) — the dashboard's
-// runManager reads the default database, which honors TESTFLOW_DB_PATH.
+// runManager reads the default database, which honors QUALITYPILOT_DB_PATH.
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sqa-dashboard-test-'));
-process.env.TESTFLOW_DB_PATH = path.join(tmpDir, 'testflow.sqlite');
+process.env.QUALITYPILOT_DB_PATH = path.join(tmpDir, 'qualitypilot.sqlite');
 
 const {
   computeTrends,
@@ -398,7 +398,7 @@ describe('dashboard server (live HTTP)', () => {
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-type') || '', /text\/html/);
     const html = await res.text();
-    assert.match(html, /SQA Agent/);
+    assert.match(html, /QualityPilot/);
   });
 
   it('CORS: allowed origin is echoed, disallowed origin gets no echo', async () => {

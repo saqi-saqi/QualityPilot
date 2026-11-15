@@ -2,7 +2,7 @@
 /**
  * scripts/benchmark.js — Phase 0 Performance & Determinism Benchmarking Suite
  *
- * Runs a full TestFlow matrix scan N times (default: 10) against a target URL
+ * Runs a full QualityPilot matrix scan N times (default: 10) against a target URL
  * and records:
  *   1. Flaky Test Rate (%) & Alternations across runs
  *   2. Mean & Distribution of Total Run Time (s)
@@ -148,7 +148,7 @@ async function main() {
   process.env.SQA_LLM_PROVIDER = opts.provider;
 
   console.log('='.repeat(70));
-  console.log(`TestFlow SQA Agent — Baseline Benchmark (Phase 0)`);
+  console.log(`QualityPilot — Baseline Benchmark (Phase 0)`);
   console.log(`Target: ${opts.target} | Runs: ${opts.runs} | Max Pages: ${opts.maxPages}`);
   console.log(`LLM Provider: ${opts.provider}`);
   console.log('='.repeat(70));

@@ -228,7 +228,7 @@ export function buildIssueBody(finding, runContext = {}) {
   }
 
   lines.push('---');
-  lines.push('_This issue was auto-filed by SQA Agent. Do not edit the title or signature._');
+  lines.push('_This issue was auto-filed by QualityPilot. Do not edit the title or signature._');
 
   return lines.join('\n');
 }
@@ -295,8 +295,8 @@ export function labelsForFinding(finding, options = {}) {
     labels.push(...options.extraLabels);
   }
 
-  // Always include "sqa-agent" so users can filter
-  labels.push('sqa-agent');
+  // Always include "qualitypilot" so users can filter
+  labels.push('qualitypilot');
 
   // Dedup
   return Array.from(new Set(labels));
@@ -445,7 +445,7 @@ export class IssueTrackerPublisher {
       }
     }
 
-    // Auto-close: list open issues with the sqa-agent label and close any
+    // Auto-close: list open issues with the qualitypilot label and close any
     // whose signature is no longer present in this run — restricted to pages
     // actually crawled this run (coverage guard).
     if (this.options.closeResolved && typeof this.adapter.listOpen === 'function') {

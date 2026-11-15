@@ -83,7 +83,7 @@ export function buildMcpReport(run, { verbosity = 'summary' } = {}) {
 
   const report = {
     schemaVersion: 1,
-    source: 'testflow-mcp',
+    source: 'qualitypilot-mcp',
     runId: run.runId || null,
     url: sanitizeUrl(run.url || ''),
     status: run.status || 'unknown',

@@ -1,12 +1,12 @@
 @echo off
 setlocal EnableDelayedExpansion
-title TestFlow - Autonomous SQA Agent
+title QualityPilot - Autonomous QualityPilot
 
 cd /d "%~dp0"
 
 cls
 echo ================================================================
-echo               TESTFLOW - AUTONOMOUS SQA AGENT                   
+echo               QUALITYPILOT - AUTONOMOUS QA PILOT
 echo ================================================================
 echo.
 echo [1/3] Checking environment...
@@ -36,7 +36,7 @@ if not exist "node_modules\" (
 )
 
 echo [2/3] Checking database...
-if exist "data\testflow.sqlite" (
+if exist "data\qualitypilot.sqlite" (
     echo       SQLite database detected.
 ) else (
     echo       Initializing SQLite database...
@@ -45,12 +45,12 @@ if exist "data\testflow.sqlite" (
     )
 )
 
-echo [3/3] Starting TestFlow Dashboard Server...
+echo [3/3] Starting QualityPilot Dashboard Server...
 echo.
 echo ================================================================
 echo   URL:      http://localhost:8080
 echo   Status:   Running
-echo   Database: SQLite (data/testflow.sqlite)
+echo   Database: SQLite (data/qualitypilot.sqlite)
 echo.
 echo   * Keep this window open while testing.
 echo   * Press Ctrl+C in this window to stop the server.
@@ -65,6 +65,6 @@ call npm run start:dashboard
 
 echo.
 echo ================================================================
-echo   TestFlow server has stopped.
+echo   QualityPilot server has stopped.
 echo ================================================================
 pause

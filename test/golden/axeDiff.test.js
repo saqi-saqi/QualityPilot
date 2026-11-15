@@ -7,7 +7,7 @@ import { runAxeOnPage, axeResultsToFindings } from '../../src/executors/a11yDeep
 import { computeCompliance, AXE_RULE_WCAG_MAP } from '../../src/services/compliance.js';
 import { createFindingFactory } from '../../src/services/findingFactory.js';
 
-describe('Differential Tests: Raw axe-core vs TestFlow WCAG Layer (axeDiff)', () => {
+describe('Differential Tests: Raw axe-core vs QualityPilot WCAG Layer (axeDiff)', () => {
   let fixture = null;
   let browser = null;
 
@@ -28,7 +28,7 @@ describe('Differential Tests: Raw axe-core vs TestFlow WCAG Layer (axeDiff)', ()
   ];
 
   for (const { name, expectedViolationCount, expectedRules } of testPages) {
-    it(`diffs raw axe-core against TestFlow WCAG layer on ${name} without dropping or recategorizing violations`, async () => {
+    it(`diffs raw axe-core against QualityPilot WCAG layer on ${name} without dropping or recategorizing violations`, async () => {
       const pageUrl = `${fixture.url}/${name}`;
       const context = await browser.newContext();
       const page = await context.newPage();
@@ -49,7 +49,7 @@ describe('Differential Tests: Raw axe-core vs TestFlow WCAG Layer (axeDiff)', ()
         );
         assert.deepEqual(rawRuleIds, expectedRules.slice().sort());
 
-        // 2. Separately run TestFlow's own accessibility layer against the same page
+        // 2. Separately run QualityPilot's own accessibility layer against the same page
         const tfRawResults = await runAxeOnPage(page, []);
         const createFinding = createFindingFactory();
         const tfFindings = axeResultsToFindings(tfRawResults, pageUrl, createFinding);
@@ -59,20 +59,20 @@ describe('Differential Tests: Raw axe-core vs TestFlow WCAG Layer (axeDiff)', ()
           .map(f => f.ruleId.replace(/^axe-/, ''))
           .sort();
 
-        // 3. Differential assertion: TestFlow must NOT drop any violation reported by raw axe-core
+        // 3. Differential assertion: QualityPilot must NOT drop any violation reported by raw axe-core
         const droppedRules = rawRuleIds.filter(ruleId => !tfRuleIds.includes(ruleId));
         assert.equal(
           droppedRules.length,
           0,
-          `TestFlow silently dropped axe-core violation(s): [${droppedRules.join(', ')}] on ${name}`
+          `QualityPilot silently dropped axe-core violation(s): [${droppedRules.join(', ')}] on ${name}`
         );
 
-        // 4. TestFlow must not fabricate phantom violations not reported by raw axe-core
+        // 4. QualityPilot must not fabricate phantom violations not reported by raw axe-core
         const extraRules = tfRuleIds.filter(ruleId => !rawRuleIds.includes(ruleId));
         assert.equal(
           extraRules.length,
           0,
-          `TestFlow reported phantom violation(s) not in raw axe-core: [${extraRules.join(', ')}] on ${name}`
+          `QualityPilot reported phantom violation(s) not in raw axe-core: [${extraRules.join(', ')}] on ${name}`
         );
 
         // 5. Verify rule-to-WCAG compliance layer fidelity
@@ -106,10 +106,10 @@ describe('Differential Tests: Raw axe-core vs TestFlow WCAG Layer (axeDiff)', ()
 
   it('fails loudly if a simulated compliance mapping silently drops a raw axe violation', () => {
     const rawViolations = [{ id: 'image-alt', impact: 'critical' }];
-    const fakeTestFlowFindings = []; // Simulated buggy mapper dropping the finding
+    const fakeQualityPilotFindings = []; // Simulated buggy mapper dropping the finding
 
     const rawRules = rawViolations.map(v => v.id);
-    const tfRules = fakeTestFlowFindings.map(f => f.ruleId);
+    const tfRules = fakeQualityPilotFindings.map(f => f.ruleId);
 
     const dropped = rawRules.filter(r => !tfRules.includes(r));
     assert.equal(dropped.length, 1);

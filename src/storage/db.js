@@ -16,11 +16,28 @@ import fs from 'node:fs';
 import { config } from '../utils/config.js';
 
 // Honor config.dataDir (env SQA_DATA_DIR) so the DB lives with the other
-// stores; explicit TESTFLOW_DB_PATH / SQA_DB_PATH still win.
+// stores; explicit QUALITYPILOT_DB_PATH / SQA_DB_PATH still win.
 const DEFAULT_DB_PATH = path.join(
   path.resolve(config?.dataDir || path.join(process.cwd(), 'data')),
-  'testflow.sqlite'
+  'qualitypilot.sqlite'
 );
+
+/**
+ * One-time legacy rename (QualityPilot rename, 2026-11-15): if the freshly
+ * resolved DB path does not exist but the pre-rename `testflow.sqlite` does,
+ * move it so existing local data (runs, monitors, queue) is not orphaned.
+ */
+function migrateLegacyDbFile(dbPath) {
+  try {
+    if (fs.existsSync(dbPath)) return;
+    const legacy = path.join(path.dirname(dbPath), 'testflow.sqlite');
+    if (fs.existsSync(legacy)) {
+      fs.renameSync(legacy, dbPath);
+    }
+  } catch {
+    // Never block startup on the rename — a fresh DB is always valid.
+  }
+}
 
 let _dbInstance = null;
 
@@ -267,7 +284,8 @@ export function getDatabase(customPath) {
   }
 
   if (!_dbInstance) {
-    const dbPath = process.env.TESTFLOW_DB_PATH || process.env.SQA_DB_PATH || DEFAULT_DB_PATH;
+    const dbPath = process.env.QUALITYPILOT_DB_PATH || process.env.SQA_DB_PATH || DEFAULT_DB_PATH;
+    migrateLegacyDbFile(dbPath);
     const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });

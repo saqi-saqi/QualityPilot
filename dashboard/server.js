@@ -1,5 +1,5 @@
 /**
- * dashboard/server.js — lightweight HTTP dashboard for the SQA agent.
+ * dashboard/server.js — lightweight HTTP dashboard for QualityPilot.
  *
  * Reads run JSON files from the runManager's data dir and serves:
  *   • Static HTML/CSS/JS at /            → dashboard UI

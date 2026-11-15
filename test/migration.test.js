@@ -13,7 +13,7 @@ describe('JSON to SQLite Migration', () => {
   let dbPath;
 
   beforeEach(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'testflow-mig-'));
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'qualitypilot-mig-'));
     dbPath = path.join(tmpDir, 'test.sqlite');
   });
 

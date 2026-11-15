@@ -1,8 +1,8 @@
-# TestFlow
+# QualityPilot
 
 > Autonomous software QA agent for web applications and APIs — crawls, infers test plans (with human approval), executes matrix test suites across browsers, viewports, and authenticated roles, files deduplicated regressions to your issue tracker, and gates your CI pipeline.
 
-TestFlow is a zero-cost, self-hostable QA testing platform built on Node.js and Playwright. Give it any target web URL and TestFlow will autonomously crawl pages, inspect network waterfalls with automatic privacy redaction, generate test suites via an AI planner (or deterministic heuristics), and run combinatorial tests across browsers, responsive viewports, and authenticated sessions. All runs, monitors, job queues, flaky history, visual baselines, and finding triage state are persisted locally in SQLite with zero cloud dependencies.
+QualityPilot is a zero-cost, self-hostable QA testing platform built on Node.js and Playwright. Give it any target web URL and QualityPilot will autonomously crawl pages, inspect network waterfalls with automatic privacy redaction, generate test suites via an AI planner (or deterministic heuristics), and run combinatorial tests across browsers, responsive viewports, and authenticated sessions. All runs, monitors, job queues, flaky history, visual baselines, and finding triage state are persisted locally in SQLite with zero cloud dependencies.
 
 ---
 
@@ -17,11 +17,11 @@ TestFlow is a zero-cost, self-hostable QA testing platform built on Node.js and 
 **From npm (recommended):**
 
 ```bash
-npm install -g testflow
+npm install -g qualitypilot
 npx playwright install chromium   # one-time browser download (~130 MB, Chromium only)
 ```
 
-This installs two commands: `testflow` (CLI) and `testflow-mcp` (MCP server).
+This installs two commands: `qualitypilot` (CLI) and `qualitypilot-mcp` (MCP server).
 The npm package itself does not download browsers - Playwright downloads them
 on the first explicit install step above.
 
@@ -37,7 +37,7 @@ npx playwright install --with-deps chromium
 ### First scan (CLI, no dashboard needed)
 
 ```bash
-testflow check https://example.com --max-pages 3
+qualitypilot check https://example.com --max-pages 3
 ```
 
 Prints a score and a findings summary, and exits 0 when the quality gate
@@ -73,7 +73,7 @@ Or open the dashboard UI at `http://localhost:8080`, type `https://example.com`,
 
 ### Use FreeLLMAPI locally
 
-TestFlow can use a local [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi)
+QualityPilot can use a local [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi)
 gateway through its OpenAI-compatible endpoint:
 
 ```dotenv
@@ -97,9 +97,9 @@ do not expose port `3001` publicly.
 
 ---
 
-## 🤖 Use TestFlow from Claude Code / Cursor
+## 🤖 Use QualityPilot from Claude Code / Cursor
 
-TestFlow exposes an official [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server running over standard input/output (`stdio`). This allows AI coding agents (Claude Code, Cursor, Codex, or any MCP-compatible client) to call TestFlow's accessibility, API contract, console error, and security checks directly inside their edit-test-fix loop.
+QualityPilot exposes an official [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server running over standard input/output (`stdio`). This allows AI coding agents (Claude Code, Cursor, Codex, or any MCP-compatible client) to call QualityPilot's accessibility, API contract, console error, and security checks directly inside their edit-test-fix loop.
 
 ### 1. Register the MCP Server
 
@@ -108,8 +108,8 @@ Add this configuration snippet to your `.mcp.json` (Claude Code) or Cursor MCP s
 ```json
 {
   "mcpServers": {
-    "testflow": {
-      "command": "testflow-mcp",
+    "qualitypilot": {
+      "command": "qualitypilot-mcp",
       "env": {
         "SQA_ALLOW_PRIVATE": "true"
       }
@@ -123,13 +123,13 @@ Running from a source checkout instead of a global install? Use
 directory to the repo root.
 
 > **Why `SQA_ALLOW_PRIVATE=true`?**
-> TestFlow's enterprise SSRF boundary blocks private IP ranges (`127.0.0.1`, `10.0.0.0/8`, `192.168.0.0/16`, CGNAT, cloud metadata endpoints) by default. Setting `SQA_ALLOW_PRIVATE="true"` permits local loopback scanning so your agent can verify `http://localhost:3000` or local dev servers.
+> QualityPilot's enterprise SSRF boundary blocks private IP ranges (`127.0.0.1`, `10.0.0.0/8`, `192.168.0.0/16`, CGNAT, cloud metadata endpoints) by default. Setting `SQA_ALLOW_PRIVATE="true"` permits local loopback scanning so your agent can verify `http://localhost:3000` or local dev servers.
 
 > **Security Note**: The `stdio` transport runs as a local subprocess with zero network exposure. If an HTTP/SSE transport is enabled for remote access in the future, token authentication becomes mandatory.
 
 ### Zero-config demo (no LLM key required)
 
-TestFlow runs without any AI credentials: plan inference falls back to
+QualityPilot runs without any AI credentials: plan inference falls back to
 deterministic heuristics (the `mock` provider). One warning line is expected:
 
 ```
@@ -172,7 +172,7 @@ Once connected, you can give your AI agent natural prompts like:
 
 ## 🐳 Self-Host with Docker (1 Command)
 
-TestFlow runs on 100% free, official Docker base images with zero external services:
+QualityPilot runs on 100% free, official Docker base images with zero external services:
 
 ```bash
 cp .env.example .env
@@ -257,12 +257,12 @@ Fail builds on quality regressions straight from the CLI:
 
 ```bash
 # Installed package:
-testflow check https://staging.example.com \
+qualitypilot check https://staging.example.com \
   --max-pages 10 \
   --fail-on critical,high \
   --min-score 80 \
   --junit test-results.xml \
-  --sarif testflow.sarif
+  --sarif qualitypilot.sarif
 
 # From a source checkout:
 npm run check -- https://staging.example.com --max-pages 10 --fail-on critical,high --min-score 80
@@ -285,7 +285,7 @@ The run page exports a **WCAG evidence report** (JSON): per-criterion pass/fail/
 
 ## 🧭 Open Source Core vs. Hosted Cloud Seams
 
-TestFlow is developed as an open-core architecture. Everything needed to test, crawl, plan, and monitor your web applications is 100% free and open source.
+QualityPilot is developed as an open-core architecture. Everything needed to test, crawl, plan, and monitor your web applications is 100% free and open source.
 
 | Capability | Open-Source Engine (This Repo) | Future Hosted Cloud Tier |
 | :--- | :---: | :---: |
@@ -320,11 +320,11 @@ TestFlow is developed as an open-core architecture. Everything needed to test, c
 | `better-sqlite3` build errors during install | Prebuilt binaries cover Node 20/22/24 on Windows/macOS/Linux (x64 + arm64). If your platform has no prebuild, install build tools (Windows: VS Build Tools "Desktop development with C++"; macOS: Xcode CLT; Linux: `build-essential` + `python3`) and reinstall |
 | Scanning `http://localhost:...` is blocked | Set `SQA_ALLOW_PRIVATE=true` (CLI env or the MCP server `env` block) - the SSRF guard blocks private ranges by default |
 | `[llmProvider] No LLM provider configured ... using MockProvider` | Informational, not an error: deterministic heuristics replace AI planning. See *Zero-config demo* above |
-| `ERROR: Usage: ...` and exit code 64 | CLI arguments were invalid - check the options list via `testflow` with no arguments |
+| `ERROR: Usage: ...` and exit code 64 | CLI arguments were invalid - check the options list via `qualitypilot` with no arguments |
 
 ## 🧪 Testing
 
-TestFlow has a comprehensive unit and integration test suite:
+QualityPilot has a comprehensive unit and integration test suite:
 
 ```bash
 npm test
@@ -336,4 +336,4 @@ All **~950 tests** run via Node.js native test runner in ~25 seconds with zero e
 ## 📜 License
 
 Licensed under the **[Apache License, Version 2.0](LICENSE)**.
-You may freely use, modify, distribute, and self-host TestFlow for personal or commercial projects.
+You may freely use, modify, distribute, and self-host QualityPilot for personal or commercial projects.

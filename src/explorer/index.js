@@ -124,7 +124,7 @@ export async function buildTestPlan({ pages, targetUrl, siteOrigin, llmOpts = {}
     id: planId,
     targetUrl,
     generatedAt: new Date().toISOString(),
-    generatedBy: 'sqa-agent-explorer',
+    generatedBy: 'qualitypilot-explorer',
     status: 'proposed',
     notes,
     pages: pages.map(p => ({

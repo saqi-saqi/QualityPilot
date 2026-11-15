@@ -2,7 +2,7 @@
  * mcp/rules.js — plain-language rule knowledge base for explain_finding.
  *
  * Two sources:
- *   1. TestFlow's own ruleIds (static registry below).
+ *   1. QualityPilot's own ruleIds (static registry below).
  *   2. axe-core rule IDs — handled by a registry of the most common ones
  *      plus a graceful generic fallback (axe has 90+ rules; the fallback
  *      points the agent at the official axe rule docs). A design choice,
@@ -30,7 +30,7 @@ const RULES = {
   'api-error': {
     title: 'API endpoint failed',
     explanation: 'The endpoint request failed (network error or 5xx-class response).',
-    suggestedFix: 'Verify the endpoint is reachable and healthy from the environment TestFlow runs in.',
+    suggestedFix: 'Verify the endpoint is reachable and healthy from the environment QualityPilot runs in.',
   },
 
   // ─── Console / runtime ───────────────────────────────────────────

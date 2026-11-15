@@ -105,9 +105,9 @@ describe('buildIssueBody', () => {
     assert.match(body, /\*\*Target:\*\* https:\/\/example.com/);
   });
 
-  it('includes the sqa-agent footer', () => {
+  it('includes the qualitypilot footer', () => {
     const body = buildIssueBody(sampleFinding);
-    assert.match(body, /auto-filed by SQA Agent/);
+    assert.match(body, /auto-filed by QualityPilot/);
   });
 
   it('handles minimal finding', () => {
@@ -160,7 +160,7 @@ describe('groupFindingsBySignature', () => {
 // ─── labelsForFinding ────────────────────────────────────────────────
 
 describe('labelsForFinding', () => {
-  it('includes severity label, category label, origin label, and sqa-agent', () => {
+  it('includes severity label, category label, origin label, and qualitypilot', () => {
     const labels = labelsForFinding({
       severity: 'high',
       category: 'links',
@@ -169,7 +169,7 @@ describe('labelsForFinding', () => {
     assert.ok(labels.includes('P1-high'));
     assert.ok(labels.includes('category:links'));
     assert.ok(labels.includes('origin:first-party'));
-    assert.ok(labels.includes('sqa-agent'));
+    assert.ok(labels.includes('qualitypilot'));
   });
 
   it('includes extraLabels from options', () => {
@@ -184,15 +184,15 @@ describe('labelsForFinding', () => {
   it('deduplicates labels', () => {
     const labels = labelsForFinding(
       { severity: 'high', category: 'links' },
-      { extraLabels: ['sqa-agent', 'links'] }
+      { extraLabels: ['qualitypilot', 'links'] }
     );
-    const sqaCount = labels.filter(l => l === 'sqa-agent').length;
+    const sqaCount = labels.filter(l => l === 'qualitypilot').length;
     assert.equal(sqaCount, 1);
   });
 
   it('handles missing severity', () => {
     const labels = labelsForFinding({ category: 'links' });
-    assert.ok(labels.includes('sqa-agent'));
+    assert.ok(labels.includes('qualitypilot'));
     assert.ok(labels.includes('category:links'));
   });
 });
@@ -242,7 +242,7 @@ describe('IssueTrackerPublisher', () => {
 
   it('updates existing issues when match found', async () => {
     const adapter = makeMockAdapter({
-      existingIssue: { id: 'ISSUE-42', url: 'mock://issue/42', state: 'open', title: 'Existing bug', labels: ['sqa-agent'] },
+      existingIssue: { id: 'ISSUE-42', url: 'mock://issue/42', state: 'open', title: 'Existing bug', labels: ['qualitypilot'] },
     });
     const publisher = new IssueTrackerPublisher({ adapter });
 
@@ -385,7 +385,7 @@ describe('GitHubAdapter', () => {
             html_url: 'https://github.com/foo/bar/issues/42',
             state: 'open',
             title: 'Test',
-            labels: [{ name: 'sqa-agent' }],
+            labels: [{ name: 'qualitypilot' }],
             body: opts.body ? JSON.parse(opts.body).body : '',
           };
         },
@@ -396,7 +396,7 @@ describe('GitHubAdapter', () => {
     const issue = await adapter.create({
       title: '[SQA] Test bug',
       body: 'Body text',
-      labels: ['sqa-agent', 'P1-high'],
+      labels: ['qualitypilot', 'P1-high'],
       severity: 'high',
       signature: 'sig-123',
     });
@@ -423,7 +423,7 @@ describe('GitHubAdapter', () => {
               html_url: 'https://github.com/foo/bar/issues/99',
               state: 'open',
               title: 'Existing bug',
-              labels: [{ name: 'sqa-agent' }],
+              labels: [{ name: 'qualitypilot' }],
               body: '<!-- sqa-signature: ruleId::https://example.com -->\n\nBody',
             }],
           };
@@ -515,7 +515,7 @@ describe('JiraAdapter', () => {
             fields: {
               summary: 'Test bug',
               status: { statusCategory: { key: 'indeterminate' } },
-              labels: ['sqa-agent'],
+              labels: ['qualitypilot'],
               description: 'panel content',
             },
           };
@@ -529,7 +529,7 @@ describe('JiraAdapter', () => {
     const issue = await adapter.create({
       title: 'Test bug',
       body: 'Body',
-      labels: ['sqa-agent'],
+      labels: ['qualitypilot'],
       severity: 'high',
       signature: 'sig-123',
     });

@@ -1,7 +1,7 @@
-# TestFlow Fixture Ground Truth Specification (`EXPECTED.md`)
+# QualityPilot Fixture Ground Truth Specification (`EXPECTED.md`)
 
-This document serves as the single source of truth for the TestFlow test harness fixture (`test/fixtures/site/`).
-Golden snapshot tests assert against these exact values to deterministically verify TestFlow's aggregation, scoring, dedup, and categorization logic.
+This document serves as the single source of truth for the QualityPilot test harness fixture (`test/fixtures/site/`).
+Golden snapshot tests assert against these exact values to deterministically verify QualityPilot's aggregation, scoring, dedup, and categorization logic.
 
 ---
 
@@ -47,7 +47,7 @@ Golden snapshot tests assert against these exact values to deterministically ver
 - **Description**: Clean valid HTML document with correct `lang`, `title`, semantic landmarks, valid contrast, and proper alt text.
 - **Expected Findings Count**: `0`
 - **Expected Quality Score**: `100`
-- **Purpose**: True-negative baseline. TestFlow must not produce false-positive findings.
+- **Purpose**: True-negative baseline. QualityPilot must not produce false-positive findings.
 
 ### 4. `page-timeout.html`
 - **Rule ID**: `page-load-failure`
@@ -64,7 +64,7 @@ Golden snapshot tests assert against these exact values to deterministically ver
 - **Confidence**: `confirmed`
 - **Finding Type**: `bug`
 - **Status**: **CONFIRMED**
-- **Categorization Invariant**: Genuinely broken public endpoint that returns 400 even on public GET requests. TestFlow must **NOT** classify this as `SUSPECTED` or unauthenticated; it must remain a real confirmed network bug.
+- **Categorization Invariant**: Genuinely broken public endpoint that returns 400 even on public GET requests. QualityPilot must **NOT** classify this as `SUSPECTED` or unauthenticated; it must remain a real confirmed network bug.
 
 ### 6. `GET /api/needs-session`
 - **Rule ID**: `api-status-mismatch`

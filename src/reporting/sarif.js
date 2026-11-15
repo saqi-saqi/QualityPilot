@@ -83,7 +83,7 @@ export function toSarif(report) {
     runs: [{
       tool: {
         driver: {
-          name: 'TestFlow',
+          name: 'QualityPilot',
           informationUri: 'https://github.com/saqi-saqi/SQA_Agent',
           rules: [...rules.values()],
         },

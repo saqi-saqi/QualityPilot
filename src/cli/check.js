@@ -2,7 +2,7 @@
  * src/cli/check.js — CI gate.
  *
  * Usage:
- *   testflow check <url> [--fail-on critical|high|medium|low|info|none|critical,high]
+ *   qualitypilot check <url> [--fail-on critical|high|medium|low|info|none|critical,high]
  *                          [--min-score <n>] [--junit <file>] [--sarif <file>]
  *                          [--format json|junit|sarif] [--json] [--strict]
  *
@@ -122,7 +122,7 @@ export function parseArgs(argv) {
   }
 
   if (!url) {
-    throw new Error('Usage: testflow check <url> [--fail-on critical|high|medium|low|info|none] [--min-score <n>] [--junit <file>] [--sarif <file>] [--format json|junit|sarif]');
+    throw new Error('Usage: qualitypilot check <url> [--fail-on critical|high|medium|low|info|none] [--min-score <n>] [--junit <file>] [--sarif <file>] [--format json|junit|sarif]');
   }
 
   return { url, ...opts };
@@ -130,7 +130,7 @@ export function parseArgs(argv) {
 
 /** Print a compact scan summary to stdout (CI-friendly). */
 function printSummary({ url, score, findings, pages, compliance, json }) {
-  console.log(`SQA Agent CI check`);
+  console.log(`QualityPilot CI check`);
   console.log(`URL: ${url}`);
   console.log(`Pages: ${pages || 0} | Score: ${score || '?'}/100 | Findings: ${findings?.length || 0}`);
 
@@ -302,7 +302,7 @@ export async function checkMain(argv = process.argv) {
   }
   try {
     const { url, failOn, timeout, maxPages, maxDepth, minScore, junitPath, sarifPath, format, json, strict } = parsedArgs;
-    process.stdout.write(`SQA Agent CI check — ${url}\n`);
+    process.stdout.write(`QualityPilot CI check — ${url}\n`);
 
     const run = await runCheck({ url, timeout, maxPages, maxDepth });
 

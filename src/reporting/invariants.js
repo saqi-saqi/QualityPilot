@@ -6,7 +6,7 @@ import { getNodeSignature } from '../matrix/matrixRunner.js';
 export const ALWAYS_MEASURED_FIELDS = ['LCP', 'FCP', 'TTFB'];
 
 /**
- * Validates a TestFlow report or run object against system-wide correctness invariants:
+ * Validates a QualityPilot report or run object against system-wide correctness invariants:
  *
  * 1. Count consistency:
  *    - Confirmed bugs count matches only actual CONFIRMED bug findings.

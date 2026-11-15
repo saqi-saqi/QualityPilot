@@ -39,7 +39,7 @@ describe('Golden Fixture Report Tests (Ground Truth Verification)', () => {
     clearExecutors();
   });
 
-  it('runs a full TestFlow scan against the fixture and EXACTLY matches EXPECTED.md', async () => {
+  it('runs a full QualityPilot scan against the fixture and EXACTLY matches EXPECTED.md', async () => {
     const baseUrl = fixture.url;
 
     // Build plan matching EXPECTED.md

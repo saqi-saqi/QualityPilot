@@ -235,10 +235,10 @@ export class JiraAdapter {
   }
 
   /**
-   * List all open issues in this project with the sqa-agent label.
+   * List all open issues in this project with the qualitypilot label.
    */
   async listOpen() {
-    const jql = `project = ${this.projectKey} AND statusCategory != Done AND labels = "sqa-agent" ORDER BY created DESC`;
+    const jql = `project = ${this.projectKey} AND statusCategory != Done AND labels = "qualitypilot" ORDER BY created DESC`;
     const data = await this._api('POST', `/rest/api/${this.apiVersion}/search`, {
       jql,
       maxResults: 100,

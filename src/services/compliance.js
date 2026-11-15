@@ -282,7 +282,7 @@ const AUTOMATED_LIMITATION = 'Automated testing covers a subset of WCAG criteria
  * @param {object} [opts] — { axeVersion?, now? }
  * @returns {{
  *   generatedAt: string,
- *   tool: { name: 'TestFlow', versions: { node: string, axe: string|null } },
+ *   tool: { name: 'QualityPilot', versions: { node: string, axe: string|null } },
  *   criteria: Array<{ criterion, level, status: 'pass'|'fail'|'not-tested',
  *                     rules: string[], failures: Array<{ ruleId, help, nodes: string[] }> }>,
  *   summary: { passed, failed, notTested, conformancePct }
@@ -364,7 +364,7 @@ export function buildEvidenceReport(run, opts = {}) {
   return {
     generatedAt: opts.now || new Date().toISOString(),
     tool: {
-      name: 'TestFlow',
+      name: 'QualityPilot',
       versions: {
         node: process.version,
         axe: opts.axeVersion ?? run?.axeVersion ?? null,
