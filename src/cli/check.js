@@ -2,7 +2,7 @@
  * src/cli/check.js — CI gate.
  *
  * Usage:
- *   npx sqa-agent check <url> [--fail-on critical|high|medium|low|info|none|critical,high]
+ *   testflow check <url> [--fail-on critical|high|medium|low|info|none|critical,high]
  *                          [--min-score <n>] [--junit <file>] [--sarif <file>]
  *                          [--format json|junit|sarif] [--json] [--strict]
  *
@@ -28,6 +28,7 @@
  */
 
 import { writeFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 import { toJUnitXml } from '../reporting/junit.js';
 import { toSarif } from '../reporting/sarif.js';
 
@@ -121,7 +122,7 @@ export function parseArgs(argv) {
   }
 
   if (!url) {
-    throw new Error('Usage: npx sqa-agent check <url> [--fail-on critical|high|medium|low|info|none] [--min-score <n>] [--junit <file>] [--sarif <file>] [--format json|junit|sarif]');
+    throw new Error('Usage: testflow check <url> [--fail-on critical|high|medium|low|info|none] [--min-score <n>] [--junit <file>] [--sarif <file>] [--format json|junit|sarif]');
   }
 
   return { url, ...opts };
@@ -260,17 +261,19 @@ async function runCheck({ url, timeout, maxPages, maxDepth }) {
   process.env.SQA_MAX_PAGES = process.env.SQA_MAX_PAGES || String(maxPages);
   process.env.SQA_MAX_DEPTH = process.env.SQA_MAX_DEPTH || String(maxDepth);
 
-  const { createRunWithMatrix } = await import('../services/runManager.js');
   const { registerAllExecutors } = await import('../executors/index.js');
   const { registerLegacyChecks } = await import('../checks/index.js');
-
   registerAllExecutors();
   registerLegacyChecks();
 
-  const { startRun } = await import('../matrix/runner.js');
-  const { getRun } = await import('../services/runManager.js');
+  // The run manager owns the whole pipeline: createRun validates the URL
+  // (SSRF), enqueues the job and starts the in-process queue worker; the CLI
+  // then polls getRun() until the run reaches a terminal status. The old
+  // code imported a nonexistent '../matrix/runner.js' startRun API, so the
+  // CLI could never scan anything (dormant-entry finding, 2026-11-14).
+  const { createRun, getRun } = await import('../services/runManager.js');
 
-  const runId = await startRun({ url, options: { maxPages, maxDepth }, plan: null });
+  const runId = await createRun(url, { maxPages, maxDepth });
   console.log(`Scanning ${url} (run ${runId})...`);
 
   const deadline = Date.now() + timeout;
@@ -288,11 +291,30 @@ async function runCheck({ url, timeout, maxPages, maxDepth }) {
 }
 
 export async function checkMain(argv = process.argv) {
+  let parsedArgs;
   try {
-    const { url, failOn, timeout, maxPages, maxDepth, minScore, junitPath, sarifPath, format, json, strict } = parseArgs(argv);
+    parsedArgs = parseArgs(argv);
+  } catch (err) {
+    // Argument/usage errors use the documented exit code 64 (usage), not 70
+    // (scan failure) — verified by the CLI entry-point regression test.
+    console.error(`ERROR: ${err.message}`);
+    return EXIT_URL_MISSING;
+  }
+  try {
+    const { url, failOn, timeout, maxPages, maxDepth, minScore, junitPath, sarifPath, format, json, strict } = parsedArgs;
     process.stdout.write(`SQA Agent CI check — ${url}\n`);
 
     const run = await runCheck({ url, timeout, maxPages, maxDepth });
+
+    // A failed scan must never exit 0: without this check a broken scan
+    // (e.g. Playwright browsers not installed, target unreachable) reported
+    // "PASS: gate satisfied" and exit code 0 in CI. The run record carries
+    // the underlying reason — surface it verbatim (first-run finding,
+    // 2026-11-14: missing Playwright browsers exited 0).
+    if (run.status === 'failed') {
+      console.error(`ERROR: scan failed — ${run.error || 'unknown error (see run events)'}`);
+      return EXIT_SCAN_FAILED;
+    }
 
     if (strict) {
       const { validateReport } = await import('../reporting/invariants.js');
@@ -345,4 +367,22 @@ export async function checkMain(argv = process.argv) {
     process.stderr.write(err.stack + '\n');
     return EXIT_SCAN_FAILED;
   }
+}
+
+// ─── direct CLI entry ────────────────────────────────────────────────
+// `node src/cli/check.js <url> …` (and the package.json "check" script) must
+// actually execute the scan. Before this block the module only exported its
+// helpers and exited 0 without doing anything — the documented CLI usage
+// never ran at all (found by the 2026-11-14 Juice Shop smoke run).
+// pathToFileURL is required for the comparison to work on Windows paths.
+const invokedDirectly = Boolean(process.argv[1])
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
+  // exitCode (not exit) so stdout drains fully; the scan closes its own handles.
+  checkMain(process.argv)
+    .then((code) => { process.exitCode = code; })
+    .catch((err) => {
+      console.error(err);
+      process.exitCode = EXIT_SCAN_FAILED;
+    });
 }

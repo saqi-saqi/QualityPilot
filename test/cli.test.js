@@ -1,5 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -207,6 +209,30 @@ describe('check evaluateGate', () => {
       failOn: 'critical,high',
     });
     assert.equal(gate2.failed, true);
+  });
+});
+
+// ─── direct CLI entry (smoke-run regression, 2026-11-14) ─────────────
+
+describe('check CLI entry point', () => {
+  it('executes when run directly — missing URL exits non-zero with usage (was silent exit 0)', () => {
+    const script = fileURLToPath(new URL('../src/cli/check.js', import.meta.url));
+    const res = spawnSync(process.execPath, [script], { encoding: 'utf8', timeout: 30000 });
+    assert.notEqual(res.status, 0, 'direct invocation must not silently exit 0 without doing anything');
+    assert.match(`${res.stderr || ''}${res.stdout || ''}`, /Usage/i);
+  });
+
+  it('a failed scan exits 70 and surfaces the reason (first-run regression, 2026-11-14)', () => {
+    const script = fileURLToPath(new URL('../src/cli/check.js', import.meta.url));
+    const res = spawnSync(process.execPath, [script, 'http://127.0.0.1:9', '--max-pages', '1', '--timeout', '8000'], {
+      encoding: 'utf8',
+      timeout: 60000,
+      env: { ...process.env, SQA_ALLOW_PRIVATE: 'true', ALLOW_PRIVATE_HOSTS: 'true' },
+    });
+    // Port 9 (discard protocol) refuses connections → the crawl fails → the
+    // run is marked failed → the CLI must exit 70, never 0.
+    assert.equal(res.status, 70, `failed scan must exit 70 (got ${res.status}); stdout: ${(res.stdout || '').slice(0, 300)}`);
+    assert.match(`${res.stderr || ''}${res.stdout || ''}`, /scan failed/i);
   });
 });
 

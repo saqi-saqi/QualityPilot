@@ -2,14 +2,49 @@
   "name": "testflow",
   "version": "0.3.0",
   "type": "module",
-  "description": "TestFlow — Autonomous software QA agent: explores, plans, and executes comprehensive web + API test suites",
+  "description": "TestFlow - Autonomous software QA agent: explores, plans, and executes comprehensive web + API test suites",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/saqi-saqi/SQA_Agent.git"
+  },
+  "homepage": "https://github.com/saqi-saqi/SQA_Agent#readme",
+  "bugs": {
+    "url": "https://github.com/saqi-saqi/SQA_Agent/issues"
+  },
+  "keywords": [
+    "testing",
+    "qa",
+    "e2e",
+    "accessibility",
+    "wcag",
+    "a11y",
+    "security",
+    "performance",
+    "playwright",
+    "mcp",
+    "model-context-protocol",
+    "ci",
+    "sarif",
+    "junit",
+    "autonomous-agents",
+    "web-testing",
+    "api-testing"
+  ],
   "engines": {
     "node": ">=20"
   },
   "bin": {
+    "testflow": "src/cli/testflow.js",
     "testflow-mcp": "src/mcp/stdio.js"
   },
+  "files": [
+    "src",
+    "dashboard",
+    "scripts/migrate-json-to-sqlite.js",
+    ".env.example",
+    "CHANGES.md"
+  ],
   "scripts": {
     "test": "node scripts/run-tests.mjs",
     "check": "node src/cli/check.js",
@@ -28,9 +63,11 @@
     "express": "^4.21.0",
     "express-rate-limit": "^7.4.0",
     "helmet": "^8.0.0",
-    "playwright": "^1.63.0",
+    "playwright": "1.63.0",
     "undici": "^8.12.4",
-    "z-ai-web-dev-sdk": "^0.0.18",
     "zod": "^3.23.0"
+  },
+  "optionalDependencies": {
+    "z-ai-web-dev-sdk": "^0.0.18"
   }
 }

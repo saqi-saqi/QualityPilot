@@ -20,6 +20,18 @@ const MAX_RAW_BODY_CHARS = 256 * 1024;
 // Max XHR/fetch captures persisted per page — beyond this we keep a marker.
 const MAX_API_CALLS_PER_PAGE = 200;
 
+/**
+ * SPA application-route fragments: `#/...` (hash routing) and `#!/...`
+ * (legacy hashbang). In-page anchors (`#footer`, `#section-2`) do NOT match.
+ *
+ * URL fragments are browser-side navigation identifiers — they are never sent
+ * to the web server in HTTP requests. The crawler therefore preserves them for
+ * browser navigation (page.goto) only: a fragment-route URL is a distinct
+ * crawl *target*, but the server sees the same document request as its base
+ * URL, and every SSRF/same-origin check still applies to the document origin.
+ */
+const SPA_ROUTE_HASH_RE = /^#[!/]/;
+
 function redactHeaders(headers = {}) {
   const out = {};
   for (const [k, v] of Object.entries(headers)) {
@@ -199,8 +211,30 @@ export async function crawlSite({ url, options, onEvent, signal }) {
     const crawlErrors = [];
     let dedupCount = 0;
 
-    const startCanonical = canonicalizeUrl(url);
-    const queue = [{ url, canonicalUrl: startCanonical, depth: 0 }];
+    // Crawl-target dedup key. Plain URLs keep the existing canonical form
+    // (fragment stripped, tracking params removed, trailing slash dropped).
+    // SPA route URLs keep their fragment so different application routes are
+    // distinct crawl targets — the fragment is browser-side navigation state
+    // (never sent to the server), preserved for page.goto only.
+    const crawlKey = (href) => {
+      try {
+        const u = new URL(href);
+        if (SPA_ROUTE_HASH_RE.test(u.hash)) {
+          return `${u.origin}${u.pathname}${u.search}${u.hash}`;
+        }
+      } catch { /* invalid URL — fall through to the canonical form */ }
+      return canonicalizeUrl(href);
+    };
+
+    // Seed key is route-aware too: scanning `http://host/#/login` directly
+    // must not collapse onto the bare host URL.
+    const startCanonical = crawlKey(url);
+    const queue = [{
+      url,
+      canonicalUrl: startCanonical,
+      depth: 0,
+      isSpaRoute: SPA_ROUTE_HASH_RE.test(new URL(url).hash),
+    }];
     queued.add(startCanonical);
 
     const isIgnoredExtension = (u) => {
@@ -348,6 +382,21 @@ export async function crawlSite({ url, options, onEvent, signal }) {
         timeout: config?.pageTimeoutMs || 30000
       });
 
+      // SPA routes: a fragment never triggers a new document load, so the
+      // router re-renders client-side after goto. Wait for a bounded DOM
+      // change (route content swapping in) capped by the settle window, then
+      // a micro-settle. waitForPageReady below still handles network idle,
+      // loading indicators, and running animations.
+      if (current.isSpaRoute) {
+        const bodyLenBefore = await page.evaluate(() => (document.body ? document.body.innerHTML.length : 0)).catch(() => 0);
+        await page.waitForFunction(
+          (len) => (document.body ? document.body.innerHTML.length : 0) !== len,
+          bodyLenBefore,
+          { timeout: Math.min(Math.max(Number(settleMs) || 1500, 500), 3000) }
+        ).catch(() => { /* route may render the same body length — bounded, best-effort */ });
+        await page.waitForTimeout(150);
+      }
+
       // Smart readiness settle: replaces arbitrary sleeps with dynamic checks
       // for networkidle, loading indicators, and running animations.
       await waitForPageReady(page, {
@@ -429,14 +478,20 @@ export async function crawlSite({ url, options, onEvent, signal }) {
           };
         });
 
+        const finalBase = new URL(finalUrl).href.replace(new URL(finalUrl).hash, '');
         const internalLinks = pageData.links.filter(l => {
           if (isIgnoredProtocol(l)) return false;
           try {
             const u = new URL(l, finalUrl);
             if (u.origin !== origin) return false;
-            if (u.hash && u.href.replace(u.hash, '') === new URL(finalUrl).href.replace(new URL(finalUrl).hash, '')) return false;
             if (isIgnoredExtension(u.href)) return false;
             if (shouldSkipUrl(u.href)) return false;
+            if (u.hash && u.href.replace(u.hash, '') === finalBase) {
+              // Same document. Crawl it as a separate target ONLY when the
+              // fragment is a recognized SPA application route (#/login,
+              // #!/settings); plain anchors (#footer, #section-2) are ignored.
+              return SPA_ROUTE_HASH_RE.test(u.hash);
+            }
             return true;
           } catch (e) {
             return false;
@@ -446,10 +501,15 @@ export async function crawlSite({ url, options, onEvent, signal }) {
         internalLinks.forEach(l => {
           try {
             const u = new URL(l, finalUrl);
-            const nUrl = canonicalizeUrl(u.href);
+            // Same-origin enforcement for SPA routes is structural (a route
+            // fragment rides on an already same-origin document), but keep the
+            // explicit check so a crafted href can never smuggle in an origin.
+            if (u.origin !== origin) return;
+            const isSpaRoute = SPA_ROUTE_HASH_RE.test(u.hash);
+            const nUrl = crawlKey(u.href);
             if (!visited.has(nUrl) && !queued.has(nUrl)) {
               queued.add(nUrl);
-              queue.push({ url: u.href, canonicalUrl: nUrl, depth: current.depth + 1 });
+              queue.push({ url: u.href, canonicalUrl: nUrl, depth: current.depth + 1, isSpaRoute });
             } else {
               dedupCount++;
             }

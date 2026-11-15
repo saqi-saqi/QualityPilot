@@ -12,13 +12,37 @@ TestFlow is a zero-cost, self-hostable QA testing platform built on Node.js and 
 - Node.js >= 20.0.0
 - npm >= 9.0.0
 
-### 1. Clone & Install
+### 1. Install
+
+**From npm (recommended):**
+
+```bash
+npm install -g testflow
+npx playwright install chromium   # one-time browser download (~130 MB, Chromium only)
+```
+
+This installs two commands: `testflow` (CLI) and `testflow-mcp` (MCP server).
+The npm package itself does not download browsers - Playwright downloads them
+on the first explicit install step above.
+
+**From source (development):**
+
 ```bash
 git clone https://github.com/saqi-saqi/SQA_Agent.git
 cd SQA_Agent
 npm install
 npx playwright install --with-deps chromium
 ```
+
+### First scan (CLI, no dashboard needed)
+
+```bash
+testflow check https://example.com --max-pages 3
+```
+
+Prints a score and a findings summary, and exits 0 when the quality gate
+passes (exit 1 = gate failed, 64 = usage error, 70 = scan failure). To scan a
+local dev server, set `SQA_ALLOW_PRIVATE=true` in the environment.
 
 ### 2. Start the Server & Dashboard
 ```bash
@@ -55,7 +79,7 @@ gateway through its OpenAI-compatible endpoint:
 ```dotenv
 SQA_LLM_PROVIDER=openai
 OPENAI_BASE_URL=http://localhost:3001/v1
-OPENAI_API_KEY=<the-unified-key-from-FreeLLMAPI>
+OPENAI_API_KEY=sk-your-openai-compatible-key
 OPENAI_MODEL=auto
 ```
 
@@ -85,8 +109,7 @@ Add this configuration snippet to your `.mcp.json` (Claude Code) or Cursor MCP s
 {
   "mcpServers": {
     "testflow": {
-      "command": "node",
-      "args": ["src/mcp/stdio.js"],
+      "command": "testflow-mcp",
       "env": {
         "SQA_ALLOW_PRIVATE": "true"
       }
@@ -95,10 +118,30 @@ Add this configuration snippet to your `.mcp.json` (Claude Code) or Cursor MCP s
 }
 ```
 
+Running from a source checkout instead of a global install? Use
+`"command": "node"` with `"args": ["src/mcp/stdio.js"]` and set the working
+directory to the repo root.
+
 > **Why `SQA_ALLOW_PRIVATE=true`?**
 > TestFlow's enterprise SSRF boundary blocks private IP ranges (`127.0.0.1`, `10.0.0.0/8`, `192.168.0.0/16`, CGNAT, cloud metadata endpoints) by default. Setting `SQA_ALLOW_PRIVATE="true"` permits local loopback scanning so your agent can verify `http://localhost:3000` or local dev servers.
 
 > **Security Note**: The `stdio` transport runs as a local subprocess with zero network exposure. If an HTTP/SSE transport is enabled for remote access in the future, token authentication becomes mandatory.
+
+### Zero-config demo (no LLM key required)
+
+TestFlow runs without any AI credentials: plan inference falls back to
+deterministic heuristics (the `mock` provider). One warning line is expected:
+
+```
+[llmProvider] No LLM provider configured ... using MockProvider
+```
+
+Set `SQA_LLM_PROVIDER=mock` to silence it. To enable AI planning, set
+`SQA_LLM_PROVIDER=openai` with `OPENAI_API_KEY` (plus optional `OPENAI_BASE_URL`
+for any OpenAI-compatible gateway). The `z-ai-web-dev-sdk` vendor SDK ships as
+an **optional dependency** - it is only loaded when you explicitly select
+`SQA_LLM_PROVIDER=glm`, so its absence never breaks installation or the other
+providers.
 
 ### 2. Available MCP Tools
 
@@ -213,12 +256,16 @@ flowchart TD
 Fail builds on quality regressions straight from the CLI:
 
 ```bash
-npm run check -- https://staging.example.com \
+# Installed package:
+testflow check https://staging.example.com \
   --max-pages 10 \
   --fail-on critical,high \
   --min-score 80 \
   --junit test-results.xml \
   --sarif testflow.sarif
+
+# From a source checkout:
+npm run check -- https://staging.example.com --max-pages 10 --fail-on critical,high --min-score 80
 ```
 - `--fail-on critical,high` → exit 1 when any **confirmed** finding at those severities exists (single value = threshold semantics).
 - `--min-score 80` → exit 1 when the quality score drops below 80.
@@ -265,6 +312,16 @@ TestFlow is developed as an open-core architecture. Everything needed to test, c
 
 ---
 
+## 🩺 Troubleshooting
+
+| Symptom | Fix |
+| :--- | :--- |
+| `Executable doesn't exist ... npx playwright install` | Browsers download separately from the npm package: run `npx playwright install chromium` (Firefox/WebKit are only needed for multi-browser matrix scans) |
+| `better-sqlite3` build errors during install | Prebuilt binaries cover Node 20/22/24 on Windows/macOS/Linux (x64 + arm64). If your platform has no prebuild, install build tools (Windows: VS Build Tools "Desktop development with C++"; macOS: Xcode CLT; Linux: `build-essential` + `python3`) and reinstall |
+| Scanning `http://localhost:...` is blocked | Set `SQA_ALLOW_PRIVATE=true` (CLI env or the MCP server `env` block) - the SSRF guard blocks private ranges by default |
+| `[llmProvider] No LLM provider configured ... using MockProvider` | Informational, not an error: deterministic heuristics replace AI planning. See *Zero-config demo* above |
+| `ERROR: Usage: ...` and exit code 64 | CLI arguments were invalid - check the options list via `testflow` with no arguments |
+
 ## 🧪 Testing
 
 TestFlow has a comprehensive unit and integration test suite:
@@ -272,7 +329,7 @@ TestFlow has a comprehensive unit and integration test suite:
 ```bash
 npm test
 ```
-All **~900 tests** run via Node.js native test runner in ~25 seconds with zero external dependencies (the runner works on every supported Node version, 20+).
+All **~950 tests** run via Node.js native test runner in ~25 seconds with zero external dependencies (the runner works on every supported Node version, 20+).
 
 ---
 
