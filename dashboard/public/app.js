@@ -950,6 +950,20 @@ async function renderFindingCard(f, runId) {
     ? `<img class="finding-screenshot" src="${screenshotUrl}" alt="Screenshot for ${escapeHtml(f.title)}" loading="lazy" />`
     : '';
 
+  // Phase 4: tiered evidence bundles — default (full media) + shareable
+  // (scrubbed HAR + trace metadata; no video/screenshots).
+  let evidenceLinks = '';
+  if (f.id) {
+    try {
+      const defaultUrl = await withAuth(`/api/runs/${encodeURIComponent(runId)}/findings/${encodeURIComponent(f.id)}/evidence`);
+      const shareableUrl = await withAuth(`/api/runs/${encodeURIComponent(runId)}/findings/${encodeURIComponent(f.id)}/evidence?shareable=true`);
+      evidenceLinks = `<div class="finding-evidence-links">
+        <a class="evidence-link" href="${defaultUrl}" download>⬇ Download evidence</a>
+        <a class="evidence-link" href="${shareableUrl}" download title="Scrubbed HAR + trace metadata; no video/screenshots">⬇ Download shareable</a>
+      </div>`;
+    } catch { /* auth unavailable — hide links */ }
+  }
+
   const matrixCells = f.matrixCells?.length
     ? `<div class="finding-meta">Observed in: ${f.matrixCells.map(escapeHtml).join(', ')}</div>`
     : '';
@@ -971,7 +985,7 @@ async function renderFindingCard(f, runId) {
         <div class="finding-title">${escapeHtml(f.title)}</div>
         <div>${badge}${confidence}${origin}${ruleId}</div>
       </div>
-      ${page}${description}${evidence}${fix}${screenshot}${occurrences}${matrixCells}${triageRow}
+      ${page}${description}${evidence}${fix}${screenshot}${evidenceLinks}${occurrences}${matrixCells}${triageRow}
     </div>`;
 }
 

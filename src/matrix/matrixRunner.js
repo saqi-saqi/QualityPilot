@@ -18,8 +18,17 @@
  */
 
 import { createHash } from 'node:crypto';
+import path from 'node:path';
+import fs from 'node:fs';
 import { runExecutor, hasExecutor } from '../services/executorRegistry.js';
 import { canonicalizeUrl } from '../utils/classify.js';
+import {
+  pageScopeAgreement,
+  promotePageLoadFailures,
+  crossCellAgreement,
+  retryReconcile,
+  isRetriableFinding,
+} from './matrixClassifier.js';
 
 const SEVERITY_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
 
@@ -96,20 +105,30 @@ function buildCellContext(cell, baseCtx) {
  */
 async function runCell(cell, baseCtx) {
   let context = null;
+  let cellCtx = null;
+  let evidence = null;
   const cellFindings = [];
   const cellStats = { cellId: cell.id, status: 'ok', executors: [] };
 
   try {
     if (cell.needsBrowser && baseCtx.browserPool) {
+      // Phase 4 evidence capture: trace + video on browser cells. Both are
+      // KEPT only when the cell produced failures, discarded otherwise
+      // (bounded storage).
+      evidence = baseCtx.evidenceDir
+        ? { videoDir: path.join(baseCtx.evidenceDir, cell.id, 'video'), tracing: true }
+        : null;
       context = await baseCtx.browserPool.createContext({
         browserName: cell.browser,
         viewport: cell.viewport,
         role: cell.role,
+        evidence,
       });
     }
 
-    const cellCtx = buildCellContext(cell, baseCtx);
+    cellCtx = buildCellContext(cell, baseCtx);
     if (context) cellCtx.context = context;
+    if (evidence) cellCtx.evidence = evidence;
 
     for (const executorName of cell.executors) {
       if (baseCtx.signal?.aborted) {
@@ -145,7 +164,31 @@ async function runCell(cell, baseCtx) {
     }
   } finally {
     if (context && baseCtx.browserPool) {
+      // Phase 4: stop tracing BEFORE the context closes — saved to a file
+      // only when the cell produced failures (or a screenshot), discarded
+      // otherwise. Videos finalize on context close; kept for failing
+      // cells, deleted for clean ones (bounded storage).
+      const cellHasFailures = cellFindings.some(
+        (f) => f.ruleId === 'e2e-flow-failure' || f.ruleId === 'e2e-flow-selector-timeout' || f.screenshot,
+      );
+      if (cellCtx?.evidence?.tracing) {
+        if (cellHasFailures) {
+          const tracePath = path.join(baseCtx.evidenceDir, cell.id, 'trace.zip');
+          fs.mkdirSync(path.dirname(tracePath), { recursive: true });
+          await context.tracing.stop({ path: tracePath }).catch(() => {});
+          for (const f of cellFindings) {
+            if (String(f.ruleId || '').startsWith('e2e-')) {
+              f.evidenceRef = { cellId: cell.id, hasTrace: true, hasVideo: true };
+            }
+          }
+        } else {
+          await context.tracing.stop().catch(() => {}); // discard
+        }
+      }
       await baseCtx.browserPool.releaseContext(context);
+      if (cellCtx?.evidence?.videoDir && !cellHasFailures) {
+        fs.rmSync(cellCtx.evidence.videoDir, { recursive: true, force: true });
+      }
     }
   }
 
@@ -226,6 +269,31 @@ export function dedupFindings(findings) {
 }
 
 /**
+ * Run a cell; when it produced retriable application findings (BUILD_PLAN
+ * step 4), re-run the cell once and reconcile: findings that did not
+ * reproduce are demoted to suspected + flaky; reproduced ones are confirmed
+ * and marked `retriedConfirmed` (exempt from cross-cell demotion).
+ * Environmental findings are never retried (retrying a dead network proves
+ * nothing). Disabled with options.retryBeforeConfirm === false.
+ */
+async function runCellWithOptionalRetry(cell, baseCtx, options, onEvent) {
+  const run1 = await runCell(cell, baseCtx);
+  if (options.retryBeforeConfirm === false) return run1;
+  const hasRetriable = run1.findings.some(isRetriableFinding);
+  if (!hasRetriable || baseCtx.signal?.aborted) return run1;
+  onEvent?.(`Retry (step 4): re-running cell ${cell.id} once to confirm application findings`);
+  let run2 = null;
+  try {
+    run2 = await runCell(cell, baseCtx);
+  } catch {
+    return run1; // retry run failed — keep run-1 findings as-is
+  }
+  retryReconcile(run1.findings, run2.findings, options);
+  const stats = { ...(run2.stats || run1.stats), retried: true };
+  return { findings: [...run1.findings, ...run2.findings], stats };
+}
+
+/**
  * Main matrix runner entry.
  *
  * @param {object} input
@@ -235,7 +303,9 @@ export function dedupFindings(findings) {
  * @param {object} input.createFinding — finding factory
  * @param {object} input.onEvent   — SSE progress
  * @param {object} [input.signal]  — AbortSignal
- * @param {object} [input.options] — { concurrency, dedup, screenshotsDir, runId, roles }
+ * @param {object} [input.options] — { concurrency, dedup, screenshotsDir, runId, roles,
+ *                                   coveredPages, pageScopeAgreement, pageScopePromotion,
+ *                                   crossCellAgreement, retryBeforeConfirm }
  * @returns {Promise<{ findings, stats }>}
  *
  * Concurrency:
@@ -268,6 +338,7 @@ export async function runMatrix({
     signal,
     options: { ...options },
     screenshotsDir: options.screenshotsDir || '/tmp/screenshots',
+    evidenceDir: options.evidenceDir || '',
     runId: options.runId || `run_${Date.now()}`,
   };
 
@@ -284,7 +355,7 @@ export async function runMatrix({
   };
 
   if (concurrency > 1) {
-    const result = await runMatrixConcurrently(cells, baseCtx, concurrency, signal, onEvent);
+    const result = await runMatrixConcurrently(cells, baseCtx, concurrency, signal, onEvent, options);
     allFindings = result.findings;
     allStats.cells = result.cellStats;
     // A cell "succeeded" if it ran without throwing (even if some inner executors errored).
@@ -300,7 +371,7 @@ export async function runMatrix({
       }
       onEvent?.(`Matrix cell: ${cell.id}`);
       try {
-        const { findings, stats } = await runCell(cell, baseCtx);
+        const { findings, stats } = await runCellWithOptionalRetry(cell, baseCtx, options, onEvent);
         allFindings.push(...findings);
         if (stats.status === 'ok') allStats.completedCells++;
         else if (stats.status === 'error') allStats.failedCells++;
@@ -317,7 +388,22 @@ export async function runMatrix({
   allStats.totalDurationMs = Date.now() - matrixStart;
 
   // Dedup across cells
-  const finalFindings = dedup ? dedupFindings(allFindings) : allFindings;
+  let finalFindings = dedup ? dedupFindings(allFindings) : allFindings;
+
+  // ─── Phase D: matrix-level classification (BUILD_PLAN steps 2–4) ────
+  // Step 2 — page-scope agreement over environmental findings: an isolated
+  // timeout amid healthy covered pages is promoted to a suspected bug;
+  // failures spanning every covered page stay environmental. No-op unless
+  // the caller provided coveredPages.
+  finalFindings = pageScopeAgreement({
+    findings: finalFindings,
+    coveredPages: options.coveredPages || [],
+    options,
+  }).findings;
+  // Step 3 — cross-cell agreement: confirmed-but-single-cell nondeterministic
+  // findings demoted as flaky candidates (G1). Deterministic executors and
+  // retry-confirmed findings are exempt.
+  crossCellAgreement(finalFindings, cells.length, options);
 
   // Build unified coverage failure findings if any page load failures occurred
   const coverageFailures = [];
@@ -366,6 +452,20 @@ export async function runMatrix({
   // Include coverage failure records in findings
   finalFindings.push(...coverageFailures);
 
+  // Step 2 (coverage variant): isolated page-LOAD failures promoted to
+  // suspected bug findings. Opt-in via the caller (runManager enables it);
+  // direct runMatrix callers keep the classic coverage-only behavior, so
+  // golden fixture ground truth is unchanged.
+  if (baseCtx.pageFailures?.size > 0) {
+    const { promoted } = promotePageLoadFailures({
+      pageFailures: Array.from(baseCtx.pageFailures.values()),
+      coveredPages: options.coveredPages || [],
+      createFinding,
+      options,
+    });
+    finalFindings.push(...promoted);
+  }
+
   onEvent?.(`Matrix complete: ${finalFindings.length} findings across ${allStats.completedCells} cells`);
 
   return { findings: finalFindings, coverageFailures, stats: allStats };
@@ -382,7 +482,7 @@ export async function runMatrix({
  * parallelize. Recommended concurrency: 2-4 for browser-heavy matrices,
  * higher for no-browser-heavy matrices.
  */
-async function runMatrixConcurrently(cells, baseCtx, concurrency, signal, onEvent) {
+async function runMatrixConcurrently(cells, baseCtx, concurrency, signal, onEvent, options = {}) {
   const queue = [...cells];
   const workers = [];
   const allFindings = [];
@@ -398,7 +498,7 @@ async function runMatrixConcurrently(cells, baseCtx, concurrency, signal, onEven
       onEvent?.(`[worker ${workerId}] Cell: ${cell.id}`);
 
       try {
-        const { findings, stats } = await runCell(cell, baseCtx);
+        const { findings, stats } = await runCellWithOptionalRetry(cell, baseCtx, options, onEvent);
         allFindings.push(...findings);
         cellStats.push(stats);
       } catch (err) {

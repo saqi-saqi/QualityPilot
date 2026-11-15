@@ -49,7 +49,15 @@ const baseCtx = () => ({
   createFinding: createFindingFactory(),
   onEvent: () => {},
   signal: undefined,
-  options: {},
+  // These tests exercise runner PLUMBING (dedup, stats, roles, error
+  // handling) with mock api-* findings. Phase D policies (retry + matrix
+  // classification) have their own dedicated suites — disable them here so
+  // retry re-runs don't double the finding counts these tests assert on.
+  options: {
+    retryBeforeConfirm: false,
+    crossCellAgreement: false,
+    pageScopeAgreement: false,
+  },
 });
 
 describe('runMatrix', () => {
@@ -160,7 +168,7 @@ describe('runMatrix', () => {
         plan: samplePlan,
         browserPool: null,
         ...baseCtx(),
-        options: { roles: ['admin'], dedup: false },
+        options: { roles: ['admin'], dedup: false, retryBeforeConfirm: false, crossCellAgreement: false, pageScopeAgreement: false },
       });
 
       const apiFindings = result.findings.filter(f => f.ruleId === 'api-test');

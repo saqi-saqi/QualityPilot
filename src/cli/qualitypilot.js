@@ -27,6 +27,9 @@ if (command === 'check') {
 } else if (command === 'export') {
   const { exportMain } = await import('./export.js');
   process.exitCode = await exportMain(['qualitypilot', 'export', ...args.slice(1)]);
+} else if (command === 'replay') {
+  const { replayMain } = await import('./replay.js');
+  process.exitCode = await replayMain(['qualitypilot', 'replay', ...args.slice(1)]);
 } else {
   console.error('Usage: qualitypilot <command> [options]');
   console.error('');
@@ -35,6 +38,8 @@ if (command === 'check') {
   console.error('  export <plan.json>         export a plan for CI replay or standalone Playwright');
   console.error('                             [--format plan|specs|both] [--out <dir>]');
   console.error('                             [--storage-state <role>=<path>]');
+  console.error('  replay <plan.json>         replay an exported plan against a target (--url)');
+  console.error('                             with the full matrix + classifiers, no LLM needed');
   console.error('');
   console.error('Check options:');
   console.error('  --fail-on <sev|list>   single severity = threshold ("at or above");');

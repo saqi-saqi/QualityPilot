@@ -1018,6 +1018,44 @@ async function handleEvidence(res, runId) {
   sendAttachment(res, `evidence-${runId}.json`, JSON.stringify(evidence, null, 2));
 }
 
+/** GET /api/runs/:id/findings/:fid/evidence[?shareable=true] — finding evidence bundle (ZIP). */
+async function handleFindingEvidence(res, runId, findingId, shareable) {
+  const rm = await runManager();
+  const run = await rm.getRun(runId);
+  if (!run) {
+    sendError(res, 404, `Run not found: ${runId}`);
+    return;
+  }
+  const finding = (run.findings || []).find(
+    (f) => String(f.id || '') === String(findingId) || String(f.ruleId || '') === String(findingId),
+  );
+  if (!finding) {
+    sendError(res, 404, `Finding not found in run ${runId}: ${findingId}`);
+    return;
+  }
+  let bundle;
+  try {
+    const { buildFindingEvidenceBundle } = await import('../src/services/evidenceBundle.js');
+    bundle = buildFindingEvidenceBundle({
+      run,
+      finding,
+      evidenceDir: rm.evidenceDirFor(runId),
+      shareable: shareable === true,
+      toolVersion: '0.3.0',
+    });
+  } catch (err) {
+    sendError(res, 500, `Evidence bundle failed: ${err.message}`);
+    return;
+  }
+  res.writeHead(200, {
+    'Content-Type': 'application/zip',
+    'Content-Disposition': `attachment; filename="${bundle.filename}"`,
+    'Cache-Control': 'no-store',
+    'Referrer-Policy': 'no-referrer',
+  });
+  res.end(bundle.buffer);
+}
+
 const PUBLISH_TARGETS = ['testrail', 'xray'];
 
 /** POST /api/runs/:id/publish — push results to an external test-management tool. */
@@ -1413,6 +1451,18 @@ async function handleRoute(req, res) {
     const evidenceMatch = pathname.match(/^\/api\/runs\/([^/]+)\/evidence$/);
     if (evidenceMatch && method === 'GET') {
       return await handleEvidence(res, evidenceMatch[1]);
+    }
+
+    // Phase 4: finding evidence bundles — default (unredacted) and shareable
+    // (scrubbed HAR + trace metadata, NO video/screenshots) tiers.
+    const findingEvidenceMatch = pathname.match(/^\/api\/runs\/([^/]+)\/findings\/([^/]+)\/evidence$/);
+    if (findingEvidenceMatch && method === 'GET') {
+      return await handleFindingEvidence(
+        res,
+        findingEvidenceMatch[1],
+        decodeURIComponent(findingEvidenceMatch[2]),
+        url.searchParams.get('shareable') === 'true',
+      );
     }
 
     const publishMatch = pathname.match(/^\/api\/runs\/([^/]+)\/publish$/);

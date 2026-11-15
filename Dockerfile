@@ -1,4 +1,4 @@
-# QualityPilot — Autonomous QualityPilot
+# QualityPilot — autonomous QA agent for web apps and APIs
 # Build:  docker build -t qualitypilot .
 # Run:    docker run -p 8080:8080 --env-file .env -v "$(pwd)/data:/app/data" qualitypilot
 
@@ -29,6 +29,9 @@ RUN npx playwright install --with-deps chromium
 COPY dashboard ./dashboard
 COPY src ./src
 COPY scripts ./scripts
+
+# GitHub Action docker entrypoint must be executable
+RUN chmod +x scripts/docker/qualitypilot-replay-entrypoint.sh
 
 ENV NODE_ENV=production
 ENV SQA_DASHBOARD_PORT=8080

@@ -1,0 +1,31 @@
+name: 'QualityPilot QA Gate'
+description: 'Replays a QualityPilot plan against a preview URL with the full matrix + classifiers and gates the PR on classified findings.'
+branding:
+  icon: 'shield'
+  color: 'blue'
+inputs:
+  plan:
+    description: 'Path to the exported plan JSON (qualitypilot/plan artifact — see `qualitypilot export`)'
+    required: true
+  url:
+    description: 'Preview deployment URL to replay the plan against (recorded same-origin URLs are retargeted to this host)'
+    required: true
+  fail_on:
+    description: 'Severity threshold or comma list (e.g. critical,high). Comma lists count only confirmed findings.'
+    default: 'critical,high'
+  min_score:
+    description: 'Fail when the quality score is below this (0-100)'
+    default: ''
+  max_pages:
+    description: 'Crawl page cap for the replay'
+    default: ''
+  timeout:
+    description: 'Replay timeout in milliseconds'
+    default: '600000'
+outputs:
+  summary:
+    description: 'Human-readable replay summary (also appended to the job summary)'
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  entrypoint: '/app/scripts/docker/qualitypilot-replay-entrypoint.sh'

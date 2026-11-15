@@ -123,7 +123,7 @@ export class BrowserPool {
    *
    * Applies auth state from StateManager if available.
    */
-  async createContext({ browserName, viewport, role = 'anon' }) {
+  async createContext({ browserName, viewport, role = 'anon', evidence = null }) {
     const browser = await this.getBrowser(browserName);
     const storageState = role === 'anon'
       ? undefined
@@ -138,10 +138,17 @@ export class BrowserPool {
       // hardened sites' CSP/Trusted-Types would otherwise block that.
       // Plan option `bypassCsp` defaults to true (overridable per plan).
       bypassCSP: this.options.bypassCsp !== false,
-      // Recorded "login once" session — applied to every matrix cell when a
-      // monitor has a recorded session.
+      // Phase 4 evidence capture: record video for browser cells (kept only
+      // when the cell produced failures — see matrixRunner runCell).
+      ...(evidence?.videoDir ? { recordVideo: { dir: evidence.videoDir, size: { width: 800, height: 600 } } } : {}),
       ...(storageState ? { storageState } : {}),
     });
+
+    // Phase 4 evidence capture: start tracing at context creation; the
+    // caller stops it with a path (failure) or without one (discard).
+    if (evidence?.tracing) {
+      await context.tracing.start({ screenshots: true, snapshots: true, sources: false }).catch(() => {});
+    }
 
     this.contexts.push(context);
 

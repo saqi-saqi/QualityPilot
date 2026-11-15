@@ -42,7 +42,7 @@ if (files.length === 0) {
 }
 
 console.log(`Running ${files.length} test file(s) with node ${process.version} ...`);
-const res = spawnSync(process.execPath, ['--test', ...files], {
+const res = spawnSync(process.execPath, ['--test', '--test-concurrency=1', ...files], {
   cwd: root,
   env: { ...process.env, NODE_ENV: 'test' },
   stdio: 'inherit',

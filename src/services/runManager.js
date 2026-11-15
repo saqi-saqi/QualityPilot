@@ -42,6 +42,11 @@ const MAX_CONCURRENT_RUNS = Math.max(1, config.maxConcurrentRuns || 2);
 const DATA_DIR = path.resolve(config.dataDir || path.join(process.cwd(), 'data'));
 const SCREENSHOTS_DIR = path.join(DATA_DIR, 'screenshots');
 
+/** Evidence artifacts for a run (traces, videos) — Phase 4 evidence bundles. */
+export function evidenceDirFor(runId) {
+  return path.join(DATA_DIR, 'evidence', runId);
+}
+
 const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled'];
 const MAX_TERMINAL_RUNS_KEPT = 50;   // in-memory LRU cap; SQLite stays durable
 const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;  // every 6 hours
@@ -1068,8 +1073,15 @@ export async function executeRunWithMatrix(runId, payload) {
         options: {
           dedup: run.options.dedup,
           screenshotsDir: SCREENSHOTS_DIR,
+          evidenceDir: evidenceDirFor(runId),
           runId,
           roles: run.options.roles,
+          // Phase D (BUILD_PLAN steps 2–4): matrix-level classification.
+          coveredPages: (pages || []).map((p) => p.url),
+          pageScopeAgreement: true,
+          pageScopePromotion: true,
+          crossCellAgreement: true,
+          retryBeforeConfirm: true,
           allowActiveFuzz: run.options.activeTesting && run.options.authorizedTarget,
           // Visual executor keys baselines on this (baselineStore is
           // monitor-scoped; falls back to runId when absent).
