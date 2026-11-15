@@ -1,5 +1,5 @@
 /**
- * mcp/tools.js — the seven MCP tools TestFlow exposes to coding agents.
+ * mcp/tools.js — the seven MCP tools QualityPilot exposes to coding agents.
  *
  * Design rules:
  *   • Structured JSON only — every result is a JSON object serialized as
@@ -125,7 +125,7 @@ export const TOOL_DEFS = [
   {
     name: 'start_full_scan',
     description:
-      'Start a full TestFlow matrix scan (crawl + plan + browser × viewport matrix + all executors). ' +
+      'Start a full QualityPilot matrix scan (crawl + plan + browser × viewport matrix + all executors). ' +
       'Returns a job_id immediately; poll with get_scan_status, then fetch results with get_scan_report. ' +
       'Accepts only scan-shape options — credential/session material is rejected by design (use a monitor with record-once login for authenticated scans).',
     inputSchema: {
@@ -187,7 +187,7 @@ export const TOOL_DEFS = [
     description:
       'Structured report for a completed scan job. verbosity "summary" (default): counts, score, coverage, and CONFIRMED findings only, ' +
       'each as {rule, severity, url, selector, suggestedFix}. verbosity "full": everything including evidence (redacted). ' +
-      'The report is validated against TestFlow\'s correctness invariants before being returned; a report that fails validation is never sent.',
+      'The report is validated against QualityPilot\'s correctness invariants before being returned; a report that fails validation is never sent.',
     inputSchema: {
       job_id: z.string().describe('The job_id from start_full_scan'),
       verbosity: z.enum(['summary', 'full']).optional().describe('Default "summary"'),
@@ -246,7 +246,7 @@ export const TOOL_DEFS = [
         path: z.string().describe('Path, e.g. /api/users'),
         expectedStatus: z.number().int().optional().describe('Expected HTTP status (default 200 for GET, ignored otherwise)'),
         responseSchema: z.object({}).passthrough().optional().describe('Minimal schema: {type:"object", properties:{...}} or {field:"string"}'),
-        queryParams: z.record(z.string()).optional(),
+        queryParams: z.record(z.string(), z.string()).optional(),
         body: z.unknown().optional().describe('JSON body for POST/PUT/PATCH (shape or literal)'),
       })).optional().describe('Endpoints to probe; omit to auto-observe from the page'),
     },
@@ -320,7 +320,7 @@ export const TOOL_DEFS = [
     name: 'explain_finding',
     description:
       'Plain-language explanation + suggested fix for a rule ID (e.g. from a prior quick_check/get_scan_report finding). ' +
-      'Covers TestFlow rule IDs and the most common axe-core rules.',
+      'Covers QualityPilot rule IDs and the most common axe-core rules.',
     inputSchema: {
       rule_id: z.string().describe('Rule ID, e.g. "api-status-mismatch", "console-error", "color-contrast"'),
     },

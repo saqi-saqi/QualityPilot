@@ -39,7 +39,15 @@ export const generators = {
   'numeric-overflow': () => String(Number.MAX_SAFE_INTEGER + 1),
   negative: () => '-1',
   'null-byte': () => 'foo\0bar',
-  random: () => Math.random().toString(36).slice(2, 12),
+  // Exactly 10 alphanumeric chars. The old Math.random().toString(36).slice(2, 12)
+  // could return FEWER than 10 (a double's base-36 expansion can terminate early —
+  // measured ~0.76% of calls), which flaked the length assertion.
+  random: () => {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let out = '';
+    for (let i = 0; i < 10; i++) out += chars[Math.floor(Math.random() * chars.length)];
+    return out;
+  },
 };
 
 // ─── helpers ─────────────────────────────────────────────────────────

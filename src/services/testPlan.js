@@ -132,10 +132,13 @@ const Flow = z.object({
   // Set by the flowInferrer when a flow looks too risky/ambiguous to run
   // unattended — surfaces in the review UI. The schema accepts both keys.
   needsReview: z.boolean().optional(),
+  // zod 4 note: .default() no longer parses the default through the inner
+  // schema (v3 behavior), so the retry defaults are stated explicitly here
+  // instead of relying on the inner .default(2)/.default(500) filling in.
   retry: z.object({
     maxAttempts: z.number().int().min(1).max(5).default(2),
     backoffMs: z.number().int().positive().max(10000).default(500),
-  }).default({}),
+  }).default({ maxAttempts: 2, backoffMs: 500 }),
   tags: z.array(z.string()).default([]),
 }).strict();
 
@@ -245,7 +248,7 @@ const TestPlanObject = z.object({
   id: z.string().min(1),                            // UUID
   targetUrl: z.string().url(),
   generatedAt: z.string().datetime().optional(),
-  generatedBy: z.string().default('sqa-agent-explorer'),
+  generatedBy: z.string().default('qualitypilot-explorer'),
   status: z.enum(['draft', 'proposed', 'approved', 'executing', 'completed', 'failed'])
     .default('draft'),
   notes: z.string().default(''),

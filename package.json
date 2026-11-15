@@ -1,8 +1,8 @@
 {
-  "name": "testflow",
+  "name": "qualitypilot",
   "version": "0.3.0",
   "type": "module",
-  "description": "TestFlow - Autonomous software QA agent: explores, plans, and executes comprehensive web + API test suites",
+  "description": "QualityPilot - Autonomous software QA agent: explores, plans, and executes comprehensive web + API test suites",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -35,8 +35,8 @@
     "node": ">=20"
   },
   "bin": {
-    "testflow": "src/cli/testflow.js",
-    "testflow-mcp": "src/mcp/stdio.js"
+    "qualitypilot": "src/cli/qualitypilot.js",
+    "qualitypilot-mcp": "src/mcp/stdio.js"
   },
   "files": [
     "src",
@@ -65,7 +65,7 @@
     "helmet": "^8.0.0",
     "playwright": "1.63.0",
     "undici": "^8.12.4",
-    "zod": "^3.23.0"
+    "zod": "^4.6.7"
   },
   "optionalDependencies": {
     "z-ai-web-dev-sdk": "^0.0.18"
