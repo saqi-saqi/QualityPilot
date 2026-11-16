@@ -284,6 +284,40 @@ Methodology notes: only deterministic expectations score recall — crawl-state-
 A product landing page ships in [`landing/`](landing/index.html) — a single static file, deployable anywhere.
 
 ---
+## GitHub Action
+
+QualityPilot can replay an exported test plan against a preview deployment and fail the workflow when the configured quality gate is not met.
+
+```yaml
+name: QualityPilot QA
+
+on:
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Replay QualityPilot plan
+        uses: saqi-saqi/QualityPilot@v0.3.0
+        with:
+          plan: qualitypilot/plan.json
+          url: ${{ secrets.PREVIEW_URL }}
+          fail_on: critical,high
+          min_score: 80
+```
+
+The action runs the exported plan without an LLM key, writes a summary to the GitHub Actions job summary, and returns a failing exit code when the quality gate is violated. Export a plan with:
+
+```bash
+qualitypilot export plan.json --format plan --out qualitypilot
+```
+
+Use a release tag such as `v0.3.0` in production workflows so upgrades are deliberate.
+
+---
 ## 📦 Export Your Tests
 
 One plan, two destinations:

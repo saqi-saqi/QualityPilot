@@ -1,4 +1,5 @@
 name: 'QualityPilot QA Gate'
+author: 'saqi-saqi'
 description: 'Replays a QualityPilot plan against a preview URL with the full matrix + classifiers and gates the PR on classified findings.'
 branding:
   icon: 'shield'
