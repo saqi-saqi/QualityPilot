@@ -14,7 +14,16 @@ QualityPilot is a zero-cost, self-hostable QA testing platform built on Node.js 
 
 ### 1. Install
 
-**From source (current method — the npm package ships with the v0.3.0 release, not before):**
+**From npm (recommended):**
+
+```bash
+npm install -g qualitypilot
+npx playwright install chromium   # one-time browser download (~130 MB)
+```
+
+This installs the `qualitypilot` CLI and `qualitypilot-mcp` MCP server.
+
+**From source (development):**
 
 ```bash
 git clone https://github.com/saqi-saqi/QualityPilot.git
@@ -23,9 +32,8 @@ npm install
 npx playwright install --with-deps chromium
 ```
 
-This gives you two commands locally: `npm run check -- <url> …` (CI gate CLI)
-and `npm run mcp` (MCP server). `npm install -g qualitypilot` becomes valid
-once the package is published to the registry.
+This gives you the same commands locally through the repository scripts:
+`npm run check -- <url> …` (CI gate CLI) and `npm run mcp` (MCP server).
 
 ### First scan (CLI, no dashboard needed)
 
