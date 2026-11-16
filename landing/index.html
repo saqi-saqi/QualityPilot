@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QualityPilot — autonomous QA agent for web apps</title>
+<meta name="description" content="QualityPilot crawls your web app, builds a test plan, and executes a full QA matrix — security headers, accessibility (WCAG 2.x), broken links, API contracts, fuzzing, performance and visual regression — then gates your CI with SARIF and JUnit reports.">
+<style>
+  :root {
+    --bg: #0b1020; --bg2: #111832; --panel: #141b38; --line: #26305a;
+    --text: #e7ebf7; --muted: #9aa4c7; --accent: #4f8cff; --accent2: #37d0a2;
+    --warn: #ffb454; --bad: #ff6b6b; --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  header { position: sticky; top: 0; z-index: 10; background: rgba(11,16,32,.92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+  nav { display: flex; align-items: center; gap: 24px; height: 60px; }
+  .logo { font-weight: 700; font-size: 18px; color: var(--text); }
+  .logo span { color: var(--accent); }
+  nav .links { margin-left: auto; display: flex; gap: 20px; font-size: 14px; }
+  nav .links a { color: var(--muted); }
+  nav .links a:hover { color: var(--text); }
+  .hero { padding: 88px 0 64px; background: radial-gradient(1000px 400px at 50% -80px, #1b2b6b55, transparent); }
+  .hero h1 { font-size: clamp(34px, 6vw, 56px); line-height: 1.15; margin: 0 0 18px; letter-spacing: -0.5px; }
+  .hero h1 em { color: var(--accent2); font-style: normal; }
+  .hero p.sub { font-size: 19px; color: var(--muted); max-width: 720px; margin: 0 0 28px; }
+  .cta { display: flex; gap: 14px; flex-wrap: wrap; }
+  .btn { display: inline-block; padding: 12px 22px; border-radius: 10px; font-weight: 600; font-size: 15px; border: 1px solid var(--line); color: var(--text); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { text-decoration: none; filter: brightness(1.1); }
+  .btn.ghost:hover { border-color: var(--accent); text-decoration: none; }
+  .pillrow { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 26px; }
+  .pill { font-size: 13px; color: var(--muted); border: 1px solid var(--line); padding: 4px 12px; border-radius: 999px; background: var(--bg2); }
+  section { padding: 64px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 30px; margin: 0 0 10px; letter-spacing: -0.3px; }
+  .lede { color: var(--muted); max-width: 760px; margin: 0 0 36px; font-size: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; }
+  .card h3 { margin: 0 0 8px; font-size: 16px; }
+  .card p { margin: 0; color: var(--muted); font-size: 14px; }
+  .card .tag { display: inline-block; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent2); margin-bottom: 10px; }
+  pre { background: #0d1329; border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; overflow-x: auto; font-size: 13.5px; line-height: 1.7; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+  code { background: #0d1329; padding: 2px 6px; border-radius: 6px; font-size: 0.92em; }
+  .twocol { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 860px) { .twocol { grid-template-columns: 1fr; } }
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 12.5px; text-transform: uppercase; letter-spacing: .06em; }
+  td.ok { color: var(--accent2); font-weight: 600; }
+  td.bad { color: var(--bad); font-weight: 600; }
+  .statrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin: 30px 0 8px; }
+  .stat { background: var(--bg2); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; }
+  .stat .n { font-size: 30px; font-weight: 700; color: var(--text); }
+  .stat .l { font-size: 13px; color: var(--muted); }
+  .fineprint { color: var(--muted); font-size: 13px; margin-top: 14px; }
+  footer { border-top: 1px solid var(--line); padding: 36px 0 48px; color: var(--muted); font-size: 14px; }
+  footer .wrap { display: flex; gap: 24px; flex-wrap: wrap; justify-content: space-between; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <nav>
+      <div class="logo">Quality<span>Pilot</span></div>
+      <div class="links">
+        <a href="#pipeline">How it works</a>
+        <a href="#detectors">Detectors</a>
+        <a href="#ci">CI gate</a>
+        <a href="#benchmark">Benchmark</a>
+        <a href="#mcp">MCP</a>
+        <a href="https://github.com/saqi-saqi/QualityPilot">GitHub</a>
+      </div>
+    </nav>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="wrap">
+    <h1>Your web app's <em>whole QA matrix</em>,<br>run by one agent.</h1>
+    <p class="sub">QualityPilot crawls your app like a user, infers a test plan, and executes it across a browser-and-API execution matrix — security headers, WCAG accessibility, broken links, console and network failures, API contracts, input fuzzing, performance budgets and visual regression. Then it gates your CI with one exit code.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/saqi-saqi/QualityPilot">Get started</a>
+      <a class="btn ghost" href="#ci">Run the CI gate</a>
+    </div>
+    <div class="pillrow">
+      <span class="pill">Node ≥ 20</span>
+      <span class="pill">Playwright chromium/firefox/webkit</span>
+      <span class="pill">SARIF 2.1.0</span>
+      <span class="pill">JUnit XML</span>
+      <span class="pill">MCP server</span>
+      <span class="pill">Apache-2.0</span>
+    </div>
+  </div>
+</div>
+
+<section id="pipeline">
+  <div class="wrap">
+    <h2>From URL to verified findings</h2>
+    <p class="lede">No rules files to write, no test suite to maintain. Point QualityPilot at a URL and it does the four things a QA team does on day one — then keeps doing them on every commit.</p>
+    <div class="grid">
+      <div class="card"><span class="tag">Step 1</span><h3>Crawl</h3><p>A real browser explores the app: same-origin links, SPA hash routes, forms, API traffic. Redirects that leave the target's origin are refused.</p></div>
+      <div class="card"><span class="tag">Step 2</span><h3>Plan</h3><p>The explorer turns crawled evidence into a validated test plan — pages, flows, API endpoints, fuzz targets, a11y rule scope — every URL SSRF-checked.</p></div>
+      <div class="card"><span class="tag">Step 3</span><h3>Execute a matrix</h3><p>Executors run across browser × viewport × role cells with retry-and-confirm classification, so one-off flakes don't become findings.</p></div>
+      <div class="card"><span class="tag">Step 4</span><h3>Gate</h3><p>Findings are deduped, scored 0–100, and reported as SARIF/JUnit. <code>qualitypilot check</code> exits non-zero when your policy is violated.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="detectors">
+  <div class="wrap">
+    <h2>What it checks</h2>
+    <p class="lede">Ten executors, one engine. Every finding carries evidence, a suggested fix, severity and confidence.</p>
+    <div class="grid">
+      <div class="card"><span class="tag">security</span><h3>Headers, cookies, mixed content</h3><p>CSP, HSTS, X-Frame-Options, nosniff, Referrer/Permissions-Policy, COOP/CORP, cookie flags, CSP directive weaknesses, credentialed CORS.</p></div>
+      <div class="card"><span class="tag">accessibility-deep</span><h3>WCAG 2.x conformance</h3><p>axe-core over the full A/AA rule universe, mapped to success criteria with a conformance percentage and blockers list.</p></div>
+      <div class="card"><span class="tag">api-contract</span><h3>API contract probes</h3><p>Captured endpoints replayed anonymously: unexpected statuses and schema drift get flagged with the observed response as evidence.</p></div>
+      <div class="card"><span class="tag">fuzz</span><h3>Input mutation</h3><p>Bounded SQLi/XSS/path-traversal/overflow generators against inferred forms and API fields. 4xx responses are accepted — only 5xx and crashes report.</p></div>
+      <div class="card"><span class="tag">legacy-links / console / network</span><h3>Runtime health</h3><p>Broken links (HEAD/GET with retry), JS console errors and exceptions, failed requests — all classified, environmental noise separated.</p></div>
+      <div class="card"><span class="tag">perf</span><h3>Performance budgets</h3><p>CDP metrics (LCP, CLS, TBT) against per-page budgets, under optional network throttling.</p></div>
+      <div class="card"><span class="tag">visual</span><h3>Visual regression</h3><p>Screenshot pixel-diff against baselines with mask selectors; dimension changes are reported, not auto-failed.</p></div>
+      <div class="card"><span class="tag">e2e</span><h3>Flow execution</h3><p>Inferred and authored user flows run in real browsers with selector-timeout evidence and traces on failure.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="ci">
+  <div class="wrap">
+    <h2>The CI gate</h2>
+    <p class="lede">One command, machine-readable reports, honest exit codes: 0 pass, 1 gate violated, 64 usage, 70 scan failure — a scan that couldn't finish never reports a green pass.</p>
+    <div class="twocol">
+<pre>qualitypilot check https://staging.example.com \
+  --fail-on critical,high \
+  --min-score 80 \
+  --max-pages 25 --max-depth 2 \
+  --junit junit.xml --sarif sarif.json</pre>
+<pre>$ echo $?
+1
+FAIL: 2 confirmed finding(s) at severity critical, high</pre>
+    </div>
+    <p class="fineprint">Runs with an explicit <code>--fail-on</code> list count only <strong>confirmed</strong> findings; a threshold value (e.g. <code>--fail-on high</code>) counts everything at-or-above except environmental failures. Timeouts, DNS and connection failures are classified environmental and never fake a green gate.</p>
+  </div>
+</section>
+
+<section id="benchmark">
+  <div class="wrap">
+    <h2>Measured, not claimed</h2>
+    <p class="lede">Recall is computed against a curated ground truth on <strong>OWASP Juice Shop v20.4.0</strong> (local standalone), where every expectation is re-verified against the live target before scoring, and known false-positive modes are asserted <em>must-not-find</em>. Harness and ground truth ship in the repo (<code>benchmark/</code>).</p>
+    <div class="statrow">
+      <div class="stat"><div class="n">100%</div><div class="l">deterministic-ground-truth recall (6/6)</div></div>
+      <div class="stat"><div class="n">0</div><div class="l">must-not-find violations</div></div>
+      <div class="stat"><div class="n">16</div><div class="l">distinct rules reported on Juice Shop</div></div>
+      <div class="stat"><div class="n">644s</div><div class="l">full-matrix scan wall time (9 pages)</div></div>
+    </div>
+    <table>
+      <thead><tr><th>Expectation (detector)</th><th>Severity</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td><code>header-content-security-policy</code> — security</td><td>high</td><td class="ok">✅ detected</td></tr>
+        <tr><td><code>header-referrer-policy</code> — security</td><td>low</td><td class="ok">✅ detected</td></tr>
+        <tr><td><code>header-permissions-policy</code> — security</td><td>low</td><td class="ok">✅ detected</td></tr>
+        <tr><td><code>header-cross-origin-opener-policy</code> — security</td><td>low</td><td class="ok">✅ detected</td></tr>
+        <tr><td><code>header-cross-origin-resource-policy</code> — security</td><td>low</td><td class="ok">✅ detected</td></tr>
+        <tr><td><code>transport-http</code> — security</td><td>high</td><td class="ok">✅ detected</td></tr>
+      </tbody>
+    </table>
+    <p class="fineprint">Full surface = the default <code>qualitypilot check</code> pipeline (crawl → inferred plan → 10 executors → dedup → score). Observational detectors (axe, console, links) are reported but excluded from the deterministic denominator by design. The other direction is triaged too: the same pipeline against the official RealWorld Conduit demo produced <strong>0 false positives in 148 findings</strong>, each classified against live headers, the served HTML and recorded DOM evidence (<code>benchmark/results/conduit-triage.md</code>).</p>
+  </div>
+</section>
+
+<section id="mcp">
+  <div class="wrap">
+    <h2>An agent, not just a CLI</h2>
+    <p class="lede">QualityPilot ships an MCP server (<code>qualitypilot-mcp</code>) so coding agents can start scans, read findings, diff runs and export evidence bundles as tools. A dashboard with SSE progress, run diffs and flaky-tracking comes with the repo.</p>
+    <pre>{
+  "mcpServers": {
+    "qualitypilot": { "command": "qualitypilot-mcp" }
+  }
+}</pre>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div>QualityPilot — Apache-2.0. Juice Shop recall harness included; run your own numbers.</div>
+    <div><a href="https://github.com/saqi-saqi/QualityPilot">GitHub</a> · <a href="#benchmark">Benchmark</a></div>
+  </div>
+</footer>
+
+</body>
+</html>

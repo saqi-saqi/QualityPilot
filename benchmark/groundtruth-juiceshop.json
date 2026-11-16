@@ -1,0 +1,99 @@
+{
+  "meta": {
+    "target": "OWASP Juice Shop v20.4.0 (Windows standalone zip)",
+    "baseUrl": "http://localhost:3000",
+    "curatedAt": "2026-11-16",
+    "scope": "Black-box scan expectations a working QualityPilot default surface MUST produce. Every expectation carries a liveCheck the harness re-verifies against the running target before scoring, so target drift cannot fake a recall number.",
+    "denominatorNote": "Only 'expected' entries count toward recall. 'observational' findings are reported but never scored: they depend on crawl depth, app state, or browser behavior and are not deterministic."
+  },
+  "expected": [
+    {
+      "id": "JS-EXP-01",
+      "ruleId": "header-content-security-policy",
+      "detector": "security",
+      "severity": "high",
+      "rationale": "Juice Shop serves no Content-Security-Policy on any route (verified by direct header probe 2026-11-16).",
+      "liveCheck": { "type": "header-absent", "header": "content-security-policy" }
+    },
+    {
+      "id": "JS-EXP-02",
+      "ruleId": "header-referrer-policy",
+      "detector": "security",
+      "severity": "low",
+      "rationale": "No Referrer-Policy header served (verified 2026-11-16).",
+      "liveCheck": { "type": "header-absent", "header": "referrer-policy" }
+    },
+    {
+      "id": "JS-EXP-03",
+      "ruleId": "header-permissions-policy",
+      "detector": "security",
+      "severity": "low",
+      "rationale": "No Permissions-Policy header served (verified 2026-11-16).",
+      "liveCheck": { "type": "header-absent", "header": "permissions-policy" }
+    },
+    {
+      "id": "JS-EXP-04",
+      "ruleId": "header-cross-origin-opener-policy",
+      "detector": "security",
+      "severity": "low",
+      "rationale": "No COOP header served (verified 2026-11-16).",
+      "liveCheck": { "type": "header-absent", "header": "cross-origin-opener-policy" }
+    },
+    {
+      "id": "JS-EXP-05",
+      "ruleId": "header-cross-origin-resource-policy",
+      "detector": "security",
+      "severity": "low",
+      "rationale": "No CORP header served (verified 2026-11-16).",
+      "liveCheck": { "type": "header-absent", "header": "cross-origin-resource-policy" }
+    },
+    {
+      "id": "JS-EXP-06",
+      "ruleId": "transport-http",
+      "detector": "security",
+      "severity": "high",
+      "rationale": "Target serves everything over plain HTTP (localhost standalone). The security executor flags unencrypted transport per probed URL.",
+      "liveCheck": { "type": "scheme-http" }
+    }
+  ],
+  "mustNotFind": [
+    {
+      "id": "JS-NOT-01",
+      "ruleId": "header-strict-transport-security",
+      "rationale": "HSTS rule is HTTPS-only; the rule must skip plain-HTTP targets, not report 'missing HSTS' on them."
+    },
+    {
+      "id": "JS-NOT-02",
+      "ruleId": "header-x-content-type-options",
+      "rationale": "Juice Shop serves X-Content-Type-Options: nosniff — flagging it would be a false positive."
+    },
+    {
+      "id": "JS-NOT-03",
+      "ruleId": "header-x-frame-options",
+      "rationale": "Juice Shop serves X-Frame-Options: SAMEORIGIN — flagging it would be a false positive."
+    },
+    {
+      "id": "JS-NOT-04",
+      "ruleId": "cookie-no-secure",
+      "rationale": "Secure-flag audit is HTTPS-only; must not fire on an HTTP target."
+    },
+    {
+      "id": "JS-NOT-05",
+      "ruleId": "cookie-samesite-none-insecure",
+      "rationale": "Juice Shop sets no SameSite=None cookie on unauthenticated routes; firing would be a false positive."
+    },
+    {
+      "id": "JS-NOT-06",
+      "ruleId": "mixed-content-active",
+      "rationale": "Same-scheme localhost target cannot produce mixed content; firing would be a false positive."
+    }
+  ],
+  "observational": [
+    { "ruleId": "axe-*", "detector": "accessibility-deep", "note": "axe-core results vary with crawl set and app state (e.g. contrast on dynamically rendered pages); reported, not scored." },
+    { "ruleId": "console-*", "detector": "legacy-console", "note": "Browser console errors depend on runtime state." },
+    { "ruleId": "link-*", "detector": "legacy-links", "note": "Broken-link results depend on crawl frontier and HEAD/GET behavior of the target." },
+    { "ruleId": "network-*", "detector": "legacy-network", "note": "Failed-request classification depends on crawl-time app behavior." },
+    { "ruleId": "api-*", "detector": "api-contract", "note": "Depends on inferred endpoints." },
+    { "ruleId": "fuzz-*", "detector": "fuzz", "note": "Mutation testing results depend on inferred forms/targets." }
+  ]
+}
