@@ -37,6 +37,18 @@ function worstSeverity(a, b) {
 }
 
 /**
+ * Sanitize a matrix cell id for use as a filesystem path component. Cell ids
+ * are '<browser>:<viewport>:<role>' — ':' is illegal in NTFS directory names
+ * (Windows parses it as an alternate data stream), so every browser cell
+ * failed with ENOENT on Windows before this (2026-11-16 Juice Shop recall
+ * run: mkdir 'chromium:desktop:anon' can never succeed there).
+ * services/evidenceBundle.js must sanitize the SAME way when reading back.
+ */
+export function cellDirName(cellId) {
+  return String(cellId).replace(/:/g, '-');
+}
+
+/**
  * Short content hash — used when a finding has no selector/target so that
  * identical text findings still dedup across cells (instead of every
  * '' signature collapsing unrelated findings into one).
@@ -116,8 +128,11 @@ async function runCell(cell, baseCtx) {
       // KEPT only when the cell produced failures, discarded otherwise
       // (bounded storage).
       evidence = baseCtx.evidenceDir
-        ? { videoDir: path.join(baseCtx.evidenceDir, cell.id, 'video'), tracing: true }
+        ? { videoDir: path.join(baseCtx.evidenceDir, cellDirName(cell.id), 'video'), tracing: true }
         : null;
+      // Playwright's recordVideo.dir must already exist — it does not create
+      // the directory itself.
+      if (evidence) fs.mkdirSync(evidence.videoDir, { recursive: true });
       context = await baseCtx.browserPool.createContext({
         browserName: cell.browser,
         viewport: cell.viewport,
@@ -173,7 +188,7 @@ async function runCell(cell, baseCtx) {
       );
       if (cellCtx?.evidence?.tracing) {
         if (cellHasFailures) {
-          const tracePath = path.join(baseCtx.evidenceDir, cell.id, 'trace.zip');
+          const tracePath = path.join(baseCtx.evidenceDir, cellDirName(cell.id), 'trace.zip');
           fs.mkdirSync(path.dirname(tracePath), { recursive: true });
           await context.tracing.stop({ path: tracePath }).catch(() => {});
           for (const f of cellFindings) {

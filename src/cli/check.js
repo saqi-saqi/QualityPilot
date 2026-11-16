@@ -271,9 +271,17 @@ async function runCheck({ url, timeout, maxPages, maxDepth }) {
   // then polls getRun() until the run reaches a terminal status. The old
   // code imported a nonexistent '../matrix/runner.js' startRun API, so the
   // CLI could never scan anything (dormant-entry finding, 2026-11-14).
-  const { createRun, getRun } = await import('../services/runManager.js');
+  //
+  // 2026-11-16 (recall-benchmark finding): createRun() is the LEGACY pipeline
+  // — it executes only run.options.checks, and the CLI passes none, so every
+  // `qualitypilot check` run crawled the site, ran ZERO detectors and reported
+  // score 100 with zero findings (5 verifiably-missing security headers on
+  // Juice Shop, 0 reported). Route the CI gate through the matrix path, which
+  // crawls → builds an explorer plan → runs the plan's executors → dedups →
+  // scores. createRunWithMatrix validates the URL up front, same as createRun.
+  const { createRunWithMatrix, getRun, cancelRun } = await import('../services/runManager.js');
 
-  const runId = await createRun(url, { maxPages, maxDepth });
+  const runId = await createRunWithMatrix({ url, options: { maxPages, maxDepth } });
   console.log(`Scanning ${url} (run ${runId})...`);
 
   const deadline = Date.now() + timeout;
@@ -286,6 +294,16 @@ async function runCheck({ url, timeout, maxPages, maxDepth }) {
   }
 
   if (!run) throw new Error('Run never completed within timeout');
+
+  // Deadline expired while the run was still in flight: cancel it and fail
+  // the CLI (exit 70). Previously the in-flight run was returned and printed
+  // as if it were a finished report — status:"running", score:null,
+  // findings:[] — a scan that "found nothing" because it stopped before the
+  // matrix finished (2026-11-16 Juice Shop verification scan).
+  if (run.status !== 'completed' && run.status !== 'failed') {
+    try { await cancelRun(runId); } catch { /* best effort — CLI exits next */ }
+    throw new Error(`Run did not finish within ${timeout}ms (last status: ${run.status}) — increase --timeout or reduce --max-pages/--max-depth`);
+  }
 
   return run;
 }

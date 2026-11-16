@@ -217,6 +217,14 @@ describe('buildTestPlan end-to-end (with mock LLM)', () => {
     assert.ok(plan.executors.includes('accessibility-deep'));
     assert.ok(plan.executors.includes('perf'));
     assert.ok(plan.executors.includes('visual'));
+    // Regression (2026-11-16 Juice Shop recall benchmark): the inferred plan
+    // omitted 'security', so `qualitypilot check` never audited security
+    // headers (5 verifiably-missing on Juice Shop, 0 reported). The three
+    // legacy checks below run over already-crawled pages — no extra navigation.
+    assert.ok(plan.executors.includes('security'));
+    assert.ok(plan.executors.includes('legacy-links'));
+    assert.ok(plan.executors.includes('legacy-console'));
+    assert.ok(plan.executors.includes('legacy-network'));
   });
 
   it('produces a non-empty notes field (LLM summary + risk)', async () => {

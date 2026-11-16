@@ -144,7 +144,9 @@ export function findingMediaFiles(finding, evidenceDir) {
   }
   const ref = finding.evidenceRef;
   if (ref?.cellId && evidenceDir) {
-    const cellDir = path.join(evidenceDir, ref.cellId);
+    // matrixRunner writes cell evidence under cellDirName(cell.id) — ':' is
+    // illegal in NTFS directory names. Sanitize identically when reading back.
+    const cellDir = path.join(evidenceDir, String(ref.cellId).replace(/:/g, '-'));
     const tracePath = path.join(cellDir, 'trace.zip');
     if (ref.hasTrace && fs.existsSync(tracePath)) {
       files.push({ name: 'media/trace.zip', path: tracePath });

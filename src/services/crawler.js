@@ -414,6 +414,19 @@ export async function crawlSite({ url, options, onEvent, signal }) {
         continue;
       }
 
+      // Off-origin redirect guard: a server-side redirect (e.g. an open-redirect
+      // endpoint like Juice Shop's /redirect?to=…) can land the crawler on a
+      // different origin. Recording that page pollutes the plan and points
+      // header/a11y probes at a third-party site (2026-11-16: the crawler
+      // captured github.com content under a localhost redirect URL). Enqueued
+      // links are already origin-filtered below — only the page record leaks.
+      try {
+        if (new URL(finalUrl).origin !== origin) {
+          onEvent?.(`Skipping off-origin redirect target: ${finalUrl}`);
+          continue;
+        }
+      } catch { /* unreachable — SSRF validation above parsed this URL */ }
+
         const status = response ? response.status() : null;
 
         // Capture AI-friendly accessibility tree snapshot (Phase 2)

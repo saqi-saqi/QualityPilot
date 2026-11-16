@@ -144,6 +144,14 @@ export async function buildTestPlan({ pages, targetUrl, siteOrigin, llmOpts = {}
     visualBaselines,
     viewports,
     browsers: defaultBrowsers(options),
+    // Full detector surface on every inferred run. The 2026-11-16 Juice Shop
+    // recall benchmark found that omitting 'security' here meant the CI gate
+    // (`qualitypilot check`) never audited security headers on a target that
+    // verifiably misses 5 of them — and 'legacy-*' checks (links / console /
+    // network, all zero-extra-navigation over already-crawled pages) were
+    // adapted for matrix participation but never listed. 'legacy-workflows'
+    // stays opt-in (user-authored); 'legacy-accessibility' is superseded by
+    // 'accessibility-deep'; seo/performance stay dashboard-side.
     executors: [
       'e2e',
       'api-contract',
@@ -151,6 +159,10 @@ export async function buildTestPlan({ pages, targetUrl, siteOrigin, llmOpts = {}
       'accessibility-deep',
       'perf',
       'visual',
+      'security',
+      'legacy-links',
+      'legacy-console',
+      'legacy-network',
     ],
   };
 
