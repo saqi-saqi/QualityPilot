@@ -14,18 +14,7 @@ QualityPilot is a zero-cost, self-hostable QA testing platform built on Node.js 
 
 ### 1. Install
 
-**From npm (recommended):**
-
-```bash
-npm install -g qualitypilot
-npx playwright install chromium   # one-time browser download (~130 MB, Chromium only)
-```
-
-This installs two commands: `qualitypilot` (CLI) and `qualitypilot-mcp` (MCP server).
-The npm package itself does not download browsers - Playwright downloads them
-on the first explicit install step above.
-
-**From source (development):**
+**From source (current method — the npm package ships with the v0.3.0 release, not before):**
 
 ```bash
 git clone https://github.com/saqi-saqi/QualityPilot.git
@@ -33,6 +22,10 @@ cd QualityPilot
 npm install
 npx playwright install --with-deps chromium
 ```
+
+This gives you two commands locally: `npm run check -- <url> …` (CI gate CLI)
+and `npm run mcp` (MCP server). `npm install -g qualitypilot` becomes valid
+once the package is published to the registry.
 
 ### First scan (CLI, no dashboard needed)
 
@@ -271,6 +264,18 @@ npm run check -- https://staging.example.com --max-pages 10 --fail-on critical,h
 - `--min-score 80` → exit 1 when the quality score drops below 80.
 - JUnit XML and SARIF 2.1.0 output plug into GitHub Actions, GitLab, Azure DevOps, and code-scanning UIs.
 
+## 🎯 Benchmarked Recall & False-Positive Triage
+
+We hold the scanner to the same bar it holds your app. Two proof artifacts ship in the repo and run on demand:
+
+- **Juice Shop recall harness** (`benchmark/run-recall-benchmark.mjs` + `benchmark/groundtruth-juiceshop.json`): runs the default full-surface `qualitypilot check` pipeline against a local OWASP Juice Shop v20.4.0 and scores it against a deterministic ground truth. Every expectation is **re-verified against the live target before scoring** (target drift cannot fake a number), and known false-positive modes are asserted as must-not-find rules. Recorded Phase F run: **6/6 expectations detected (100% recall), 0 false-positive-guard violations, 16 distinct rules over 9 pages in 644s**. The detailed run receipt is retained locally in the ignored `benchmark/results/` directory.
+- **RealWorld/Conduit false-positive triage**: the same pipeline against the official RealWorld Conduit demo, with every finding classified true/false positive against the [documented Conduit API spec](https://github.com/gothinkster/realworld/blob/main/specs/api/openapi.yml) (401/404/409/422 are spec-defined responses, not defects). The detailed classification receipt is retained locally in the ignored `benchmark/results/` directory.
+
+Methodology notes: only deterministic expectations score recall — crawl-state-dependent detectors (axe, console, links) are reported as observational context; the benchmark measures exactly what a user gets from the default executor list, no special benchmark mode.
+
+A product landing page ships in [`landing/`](landing/index.html) — a single static file, deployable anywhere.
+
+---
 ## 📦 Export Your Tests
 
 One plan, two destinations:
