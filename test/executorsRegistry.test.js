@@ -12,10 +12,10 @@ describe('registerAllExecutors', () => {
   beforeEach(() => clearExecutors());
   afterEach(() => clearExecutors());
 
-  it('registers all 8 executors with one call', () => {
+  it('registers all 9 executors with one call', () => {
     registerAllExecutors();
     const names = listExecutors().map(e => e.name);
-    assert.equal(names.length, 8);
+    assert.equal(names.length, 9);
     for (const [name] of REGISTRATIONS) {
       assert.ok(hasExecutor(name), `expected ${name} to be registered`);
     }
@@ -30,7 +30,7 @@ describe('registerAllExecutors', () => {
   it('is idempotent — calling twice does not throw', () => {
     registerAllExecutors();
     assert.doesNotThrow(() => registerAllExecutors());
-    assert.equal(listExecutors().length, 8);
+    assert.equal(listExecutors().length, 9);
   });
 
   it('each executor returns { findings: [] } on empty plan', async () => {

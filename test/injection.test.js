@@ -156,6 +156,38 @@ describe('injection executor — GET query-param differential', () => {
     assert.equal(bypass.severity, 'high');
     assert.equal(bypass.confidence, 'confirmed');
   });
+
+  it('probes POST bodies from OpenAPI-imported endpoints (Phase 9 + Phase 8 synergy)', async () => {
+    let loginCalls = 0;
+    const ctx = makeCtx({
+      plan: {
+        targetUrl: 'http://localhost:3000',
+        apiEndpoints: [{
+          method: 'POST',
+          path: '/rest/user/login',
+          body: { email: 'qp-sample', password: 'qp-sample' },
+        }],
+        fuzzTargets: [],
+      },
+      options: {
+        fetch: async (url, init) => {
+          loginCalls++;
+          const body = JSON.parse(init.body);
+          // Tautology email → 200 (the verified Juice Shop bypass); anything
+          // else → 401.
+          const bypassed = body.email === "' OR 1=1--";
+          return { status: bypassed ? 200 : 401, text: async () => (bypassed ? '{"authentication":{"token":"..."}}' : 'Invalid email or password.') };
+        },
+      },
+    });
+
+    const result = await injectionExecutor(ctx);
+    const bypass = result.findings.find(f => f.ruleId === 'injection-sqli' && f.title.includes('body field "email"'));
+    assert.ok(bypass, 'the POST-body tautology bypass is reported');
+    assert.equal(bypass.severity, 'high');
+    assert.equal(bypass.confidence, 'confirmed');
+    assert.ok(loginCalls >= 2, 'baseline + mutated requests sent');
+  });
 });
 
 // ─── login-form submit differential (browser) ────────────────────────
@@ -270,6 +302,7 @@ describe('injection executor — login-form auth bypass (browser)', () => {
             // decide whether the server says 401 or 200.
             const email = filledWith.find(([s]) => s === '#email');
           },
+          async click() {},
         };
       },
       async waitForTimeout() {},
