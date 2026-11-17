@@ -6,6 +6,7 @@ import fuzzExecutor, {
   isAcceptableOutcome,
   fuzzApiField,
   fuzzFormField,
+  fuzzFormTargetBatched,
 } from '../src/executors/fuzz.js';
 import { createFindingFactory } from '../src/services/findingFactory.js';
 
@@ -253,6 +254,143 @@ describe('fuzzFormField', () => {
     });
 
     assert.ok(calls.some(call => call[0] === 'click'));
+  });
+});
+
+// ─── batched form-target fuzzing (Phase 7) ─────────────────────────
+
+describe('fuzzFormTargetBatched', () => {
+  function makeMockContext({ gotoFailures = 0, pageErrorOnAttach = null, consoleErrorOnFillIncludes = null } = {}) {
+    const calls = { goto: 0, fills: [], closes: 0 };
+    let gotoIndex = 0;
+    const listeners = {};
+    const page = {
+      on(event, handler) {
+        (listeners[event] = listeners[event] || []).push(handler);
+        // Mirrors a page that crashes during load — the error fires at attach
+        // time (before the first navigation), like the legacy single-shot path
+        // where listeners attached before the fill.
+        if (event === 'pageerror' && pageErrorOnAttach && calls.goto === 0) {
+          handler(pageErrorOnAttach);
+        }
+      },
+      async goto() {
+        calls.goto++;
+        if (gotoIndex++ < gotoFailures) throw new Error('net::ERR_CONNECTION_REFUSED');
+        return { status: () => 200 };
+      },
+      locator(selector) {
+        return {
+          first() { return this; },
+          async fill(value) {
+            calls.fills.push([selector, value]);
+            // Simulate a page that breaks on the poisoned value.
+            if (value.includes('DROP')) {
+              for (const h of listeners.pageerror || []) h(new Error('page crashed'));
+            }
+            if (consoleErrorOnFillIncludes && String(value).includes(consoleErrorOnFillIncludes)) {
+              for (const h of listeners.console || []) {
+                h({ type: () => 'error', text: () => 'widget boom', location: () => ({ url: 'https://cdn.thirdparty.test/widget.js' }) });
+              }
+            }
+          },
+        };
+      },
+      async close() { calls.closes++; },
+    };
+    return {
+      ctx: { context: { async newPage() { return page; } }, options: {}, createFinding: createFindingFactory(), onEvent: () => {} },
+      calls,
+    };
+  }
+
+  it('loads the page ONCE for many inputs (navigation reuse)', async () => {
+    const { ctx, calls } = makeMockContext();
+    const inputs = [
+      { generator: 'empty', value: '' },
+      { generator: 'unicode', value: '¹²³üñîçødé' },
+      { generator: 'oversize', value: 'A'.repeat(50) },
+    ];
+    const results = await fuzzFormTargetBatched(
+      { pageUrl: 'https://example.com/form', fieldSelector: '#email' }, inputs, ctx,
+    );
+    assert.equal(calls.goto, 1, 'one navigation for the whole target');
+    assert.equal(calls.fills.length, 3);
+    assert.ok(results.every(r => r.threw === false));
+  });
+
+  it('re-navigates after a thrown input so cascading errors cannot fabricate findings', async () => {
+    const { ctx, calls } = makeMockContext();
+    const inputs = [
+      { generator: 'sql#0', value: "'; DROP TABLE users; --" }, // breaks the page
+      { generator: 'random', value: 'abc123' },
+    ];
+    const results = await fuzzFormTargetBatched(
+      { pageUrl: 'https://example.com/form', fieldSelector: '#email' }, inputs, ctx,
+    );
+    assert.equal(calls.goto, 2, 're-navigation after the thrown input');
+    assert.equal(results[0].threw, true);
+    assert.equal(results[1].threw, false, 'next input runs on a fresh page — no cascade');
+  });
+
+  it('classifies a load-time pageerror as a thrown outcome with its message', async () => {
+    const { ctx } = makeMockContext({ pageErrorOnAttach: new Error('page crashed on load') });
+    const results = await fuzzFormTargetBatched(
+      { pageUrl: 'https://example.com/form', fieldSelector: '#email' },
+      [{ generator: 'empty', value: '' }],
+      ctx,
+    );
+    assert.equal(results[0].threw, true);
+    assert.match(results[0].error, /page crashed on load/);
+  });
+
+  it('reports third-party console noise as an info outcome', async () => {
+    const { ctx } = makeMockContext({ consoleErrorOnFillIncludes: 'trigger' });
+    const inputs = [{ generator: 'empty', value: 'trigger' }];
+    const results = await fuzzFormTargetBatched(
+      { pageUrl: 'https://example.com/form', fieldSelector: '#email' }, inputs, ctx,
+    );
+    assert.equal(results[0].info, true);
+    assert.equal(results[0].threw, false);
+    assert.match(results[0].error, /\[third-party\] widget boom/);
+  });
+
+  it('skips all inputs when no browser context exists', async () => {
+    const results = await fuzzFormTargetBatched(
+      { pageUrl: 'https://example.com/form', fieldSelector: '#email' },
+      [{ generator: 'empty', value: '' }, { generator: 'random', value: 'abc' }],
+      { options: {} },
+    );
+    assert.ok(results.every(r => r.skipped && r.reason === 'no-browser-context'));
+  });
+
+  it('marks the target unactionable after a non-actionable field instead of burning the timeout 12 times', async () => {
+    const calls = { goto: 0, fillAttempts: 0 };
+    const page = {
+      on() {},
+      async goto() { calls.goto++; return { status: () => 200 }; },
+      locator() {
+        return {
+          first() { return this; },
+          async fill() {
+            calls.fillAttempts++;
+            // Playwright's actionability timeout message — contains "locator",
+            // which the executor classifies as selector-not-found.
+            throw new Error('locator.fill: Timeout 10000ms exceeded.');
+          },
+        };
+      },
+      async close() {},
+    };
+    const inputs = Array.from({ length: 12 }, (_, i) => ({ generator: `g${i}`, value: `v${i}` }));
+    const results = await fuzzFormTargetBatched(
+      { pageUrl: 'https://example.com/contact', fieldSelector: '#userId' },
+      inputs,
+      { context: { async newPage() { return page; } }, options: {}, onEvent: () => {} },
+    );
+    assert.equal(calls.fillAttempts, 1, 'one attempt, not 12');
+    assert.equal(results[0].skipped, true);
+    assert.ok(results.slice(1).every(r => r.skipped && r.reason === 'unactionable-target'));
   });
 });
 

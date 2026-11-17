@@ -8,6 +8,8 @@ import path from 'node:path';
 import {
   parseArgs,
   evaluateGate,
+  evaluateBaselineGate,
+  loadBaselineRun,
   shouldFail,
   writeReportFiles,
 } from '../src/cli/check.js';
@@ -296,5 +298,164 @@ describe('check writeReportFiles', () => {
 
   it('is a no-op when neither artifact is requested', async () => {
     assert.deepEqual(await writeReportFiles(run, {}), []);
+  });
+});
+
+// ─── --baseline parsing + diff gate (Phase 6) ────────────────────────
+
+describe('check parseArgs — baseline and markdown', () => {
+  it('parses --baseline with a file path', () => {
+    const opts = parseArgs(['node', 'check', 'https://example.com', '--baseline', 'prev.json']);
+    assert.equal(opts.baseline, 'prev.json');
+  });
+
+  it('accepts --format markdown', () => {
+    const opts = parseArgs(['node', 'check', 'https://example.com', '--format', 'markdown']);
+    assert.equal(opts.format, 'markdown');
+  });
+
+  it('rejects --baseline without a value', () => {
+    assert.throws(
+      () => parseArgs(['node', 'check', 'https://example.com', '--baseline']),
+      /--baseline requires/,
+    );
+  });
+
+  it('defaults --concurrency to 2 and accepts 1–4', () => {
+    const opts = parseArgs(['node', 'check', 'https://example.com']);
+    assert.equal(opts.concurrency, 2);
+    assert.equal(parseArgs(['node', 'check', 'https://example.com', '--concurrency', '4']).concurrency, 4);
+    assert.equal(parseArgs(['node', 'check', 'https://example.com', '--concurrency', '1']).concurrency, 1);
+  });
+
+  it('rejects --concurrency outside 1–4', () => {
+    assert.throws(
+      () => parseArgs(['node', 'check', 'https://example.com', '--concurrency', '8']),
+      /must be a number between 1 and 4/,
+    );
+    assert.throws(
+      () => parseArgs(['node', 'check', 'https://example.com', '--concurrency', '0']),
+      /must be a number between 1 and 4/,
+    );
+  });
+});
+
+describe('loadBaselineRun', () => {
+  let dir;
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'sqa-baseline-test-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('loads a JSON report file with findings', async () => {
+    const file = path.join(dir, 'baseline.json');
+    await import('node:fs/promises').then(fs => fs.writeFile(file, JSON.stringify({ runId: 'run_prev', findings: [{ ruleId: 'x' }] })));
+    const baseline = await loadBaselineRun(file);
+    assert.equal(baseline.runId, 'run_prev');
+    assert.equal(baseline.findings.length, 1);
+  });
+
+  it('throws a clear error on invalid JSON', async () => {
+    const file = path.join(dir, 'broken.json');
+    await import('node:fs/promises').then(fs => fs.writeFile(file, '{not json'));
+    await assert.rejects(() => loadBaselineRun(file), /not valid JSON/);
+  });
+
+  it('throws when the JSON has no findings array', async () => {
+    const file = path.join(dir, 'shape.json');
+    await import('node:fs/promises').then(fs => fs.writeFile(file, JSON.stringify({ runId: 'x' })));
+    await assert.rejects(() => loadBaselineRun(file), /no findings array/);
+  });
+
+  it('tolerates mixed CLI output (progress lines around the JSON document)', async () => {
+    const file = path.join(dir, 'mixed.json');
+    const report = JSON.stringify({ runId: 'run_prev_mixed', findings: [{ ruleId: 'x' }] }, null, 2);
+    const mixed = [
+      'QualityPilot CI check — https://example.com',
+      'Scanning https://example.com (run run_prev_mixed)...',
+      '{"timestamp":"...","level":"info","message":"Crawling finished."}',
+      report,
+      'PASS: gate satisfied (fail-on: none)',
+      '',
+    ].join('\n');
+    await import('node:fs/promises').then(fs => fs.writeFile(file, mixed));
+    const baseline = await loadBaselineRun(file);
+    assert.equal(baseline.runId, 'run_prev_mixed');
+  });
+
+  it('throws when the output contains no JSON document at all', async () => {
+    const file = path.join(dir, 'empty.json');
+    await import('node:fs/promises').then(fs => fs.writeFile(file, 'Scanning...\nCrawling finished.\n'));
+    await assert.rejects(() => loadBaselineRun(file), /not valid JSON/);
+  });
+});
+
+describe('evaluateBaselineGate', () => {
+  const diff = (newFindings, extra = {}) => ({
+    baselineRunId: 'run_base',
+    summary: `${newFindings.length} new, 0 resolved, 2 persistent finding(s)`,
+    newFindings,
+    resolvedFindings: [],
+    persistentFindings: [
+      { ruleId: 'header-content-security-policy', severity: 'high', pageUrl: 'https://example.com' },
+      { ruleId: 'header-referrer-policy', severity: 'low', pageUrl: 'https://example.com' },
+    ],
+    scoreDelta: 0,
+    ...extra,
+  });
+
+  it('passes under --fail-on low when every finding is pre-existing', () => {
+    const gate = evaluateBaselineGate({
+      findings: [{ severity: 'low', ruleId: 'header-referrer-policy' }],
+      score: 50,
+      failOn: 'low',
+      diff: diff([]),
+    });
+    assert.equal(gate.failed, false);
+    assert.match(gate.reason, /baseline run_base/);
+  });
+
+  it('fails when a new finding crosses the threshold', () => {
+    const gate = evaluateBaselineGate({
+      findings: [],
+      score: 50,
+      failOn: 'medium',
+      diff: diff([{ severity: 'medium', ruleId: 'new-thing', pageUrl: 'https://example.com/x' }]),
+    });
+    assert.equal(gate.failed, true);
+    assert.match(gate.reason, /^FAIL: 1 new finding\(s\) vs baseline run_base/);
+  });
+
+  it('ignores pre-existing findings above the threshold', () => {
+    const gate = evaluateBaselineGate({
+      findings: [{ severity: 'critical', ruleId: 'old-critical' }],
+      score: 10,
+      failOn: 'critical',
+      diff: diff([], { summary: '0 new, 0 resolved, 1 persistent finding(s)' }),
+    });
+    assert.equal(gate.failed, false);
+  });
+
+  it('still enforces --min-score absolutely when a baseline is present', () => {
+    const gate = evaluateBaselineGate({
+      findings: [],
+      score: 50,
+      failOn: 'none',
+      minScore: 80,
+      diff: diff([]),
+    });
+    assert.equal(gate.failed, true);
+    assert.match(gate.reason, /below the minimum/);
+  });
+
+  it('behaves exactly like evaluateGate without a baseline', () => {
+    const findings = [{ severity: 'low', ruleId: 'x' }];
+    const base = evaluateGate({ findings, score: 50, failOn: 'low' });
+    const withNull = evaluateBaselineGate({ findings, score: 50, failOn: 'low', diff: null });
+    assert.equal(withNull.failed, base.failed);
+    assert.equal(withNull.exitCode, base.exitCode);
+    assert.equal(withNull.reason, base.reason);
   });
 });

@@ -281,3 +281,85 @@ describe('security executor', () => {
     assert.equal(result.findings.length, 0);
   });
 });
+
+// ─── cross-page rollup (Phase 6) ─────────────────────────────────────
+
+describe('security executor — cross-page rollup', () => {
+  it('reports one finding per header rule per origin, with affectedPages', async () => {
+    const ctx = baseCtx();
+    ctx.options.fetch = makeMockFetch([
+      { url: 'https://example.com', headers: {} },
+    ]);
+    ctx.plan.pages = [
+      { url: 'https://example.com' },
+      { url: 'https://example.com/about' },
+      { url: 'https://example.com/pricing' },
+    ];
+
+    const result = await securityExecutor(ctx);
+    const csp = result.findings.filter(f => f.ruleId === 'header-content-security-policy');
+    assert.equal(csp.length, 1, 'one CSP finding for the whole origin, not one per page');
+    assert.equal(csp[0].occurrences, 3);
+    assert.deepEqual([...csp[0].affectedPages].sort(), [
+      'https://example.com',
+      'https://example.com/about',
+      'https://example.com/pricing',
+    ]);
+    assert.equal(csp[0].pageUrl, 'https://example.com', 'stable alphabetically-first pageUrl for runDiff identity');
+  });
+
+  it('keeps cookie findings per page — the cookie identity is part of the finding', async () => {
+    const ctx = baseCtx();
+    ctx.options.fetch = makeMockFetch([
+      {
+        url: 'https://example.com',
+        headers: {
+          'content-security-policy': "default-src 'self'",
+          'strict-transport-security': 'max-age=31536000',
+          'x-frame-options': 'DENY',
+          'x-content-type-options': 'nosniff',
+          'referrer-policy': 'no-referrer',
+          'permissions-policy': 'camera=()',
+          'cross-origin-opener-policy': 'same-origin',
+          'cross-origin-resource-policy': 'same-site',
+        },
+        cookies: ['session=abc; Path=/'],
+      },
+    ]);
+    ctx.plan.pages = [
+      { url: 'https://example.com/login' },
+      { url: 'https://example.com/settings' },
+    ];
+
+    const result = await securityExecutor(ctx);
+    const httponly = result.findings.filter(f => f.ruleId === 'cookie-no-httponly');
+    assert.equal(httponly.length, 2, 'cookie findings stay page-scoped');
+  });
+
+  it('keeps mixed content page-scoped — it depends on the page resources', async () => {
+    const ctx = baseCtx();
+    ctx.options.fetch = makeMockFetch([
+      {
+        url: 'https://example.com',
+        headers: {
+          'content-security-policy': "default-src 'self'",
+          'strict-transport-security': 'max-age=31536000',
+          'x-frame-options': 'DENY',
+          'x-content-type-options': 'nosniff',
+          'referrer-policy': 'no-referrer',
+          'permissions-policy': 'camera=()',
+          'cross-origin-opener-policy': 'same-origin',
+          'cross-origin-resource-policy': 'same-site',
+        },
+      },
+    ]);
+    ctx.plan.pages = [
+      { url: 'https://example.com/a', apiCalls: [{ method: 'GET', url: 'http://insecure.com/x' }], imageDetails: [] },
+      { url: 'https://example.com/b', apiCalls: [{ method: 'GET', url: 'http://insecure.com/y' }], imageDetails: [] },
+    ];
+
+    const result = await securityExecutor(ctx);
+    const mixed = result.findings.filter(f => f.ruleId === 'mixed-content-active');
+    assert.equal(mixed.length, 2, 'mixed content remains page-scoped');
+  });
+});
