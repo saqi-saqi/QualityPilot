@@ -152,6 +152,85 @@ export default async function injectionExecutor(ctx) {
     }
   }
 
+  // ─── A2. Body differential for POST/PUT/PATCH endpoints with bodies ─
+  // OpenAPI-imported specs (Phase 9) supply real request bodies; mutating a
+  // string field with the tautology that turned Juice Shop's login from 401
+  // into 200 is the same verified signal as the GET differential.
+  const bodyEndpoints = (plan.apiEndpoints || []).filter(
+    (e) => ['POST', 'PUT', 'PATCH'].includes(e.method)
+      && e.body && typeof e.body === 'object' && !Array.isArray(e.body),
+  );
+
+  for (const endpoint of bodyEndpoints.slice(0, 6)) {
+    if (ctx.signal?.aborted) break;
+    const base = originOf(endpoint.baseUrl || targetUrl) || originOf(targetUrl);
+    if (!base || !fetchImpl) break;
+    const stringFields = Object.entries(endpoint.body)
+      .filter(([, v]) => typeof v === 'string')
+      .slice(0, 2);
+
+    let baseline;
+    try {
+      const res = await fetchImpl(`${base}${endpoint.path}`, {
+        method: endpoint.method,
+        headers: { 'Content-Type': 'application/json', ...(endpoint.headers || {}) },
+        body: JSON.stringify(endpoint.body),
+        signal: ctx.signal,
+      });
+      baseline = { status: res.status };
+    } catch {
+      continue; // unreachable — the crawler already reports it
+    }
+    stats.endpointsProbed++;
+    if (baseline.status >= 500) continue;
+
+    for (const [field] of stringFields) {
+      if (ctx.signal?.aborted) break;
+      const mutatedBody = { ...endpoint.body, [field]: AUTH_BYPASS_PAYLOAD };
+      let mStatus = null;
+      let mSig = null;
+      let mSnippet = '';
+      try {
+        const res = await fetchImpl(`${base}${endpoint.path}`, {
+          method: endpoint.method,
+          headers: { 'Content-Type': 'application/json', ...(endpoint.headers || {}) },
+          body: JSON.stringify(mutatedBody),
+          signal: ctx.signal,
+        });
+        mSnippet = await res.text();
+        mStatus = res.status;
+        mSig = matchSqlError(mSnippet);
+      } catch {
+        continue;
+      }
+
+      const bypassed = statusClass(baseline.status) !== '2xx' && statusClass(mStatus) === '2xx';
+      const crashed = mStatus >= 500;
+      const signals = [];
+      if (bypassed) signals.push(`status ${baseline.status} → ${mStatus} (2xx with tautology in "${field}")`);
+      if (crashed) signals.push(`status ${baseline.status} → ${mStatus} (5xx)`);
+      if (mSig) signals.push(`SQL error signature (${mSig.vendor}: ${mSig.match})`);
+      if (signals.length === 0) continue;
+
+      const ruleId = bypassed ? 'injection-sqli' : 'injection-sqli-error';
+      const confirmed = bypassed || signals.length >= 2;
+      findings.push(ctx.createFinding({
+        title: `SQL injection signal: ${endpoint.method} ${endpoint.path} body field "${field}"`,
+        severity: bypassed ? 'high' : 'medium',
+        confidence: confirmed ? 'confirmed' : 'suspected',
+        category: 'network',
+        findingType: 'bug',
+        origin: 'first-party',
+        ruleId,
+        pageUrl: `${base}${endpoint.path}`,
+        description: `Replacing body field "${field}" with the tautology payload produced: ${signals.join('; ')}. Baseline ${baseline.status}.`,
+        evidence: `Tautology payload: ${AUTH_BYPASS_PAYLOAD}\nSignals: ${signals.join(' | ')}`,
+        suggestedFix: 'Use parameterized queries and return a generic 400 for malformed input — never let SQL errors reach the client.',
+      }));
+      break; // one finding per endpoint — the first field that signals wins
+    }
+  }
+
   // ─── B. Login-form auth bypass (browser submit differential) ────────
   const formTargets = (plan.fuzzTargets || []).filter((t) => t.pageUrl && t.fieldSelector);
   const loginPages = new Map(); // pageUrl → { passwordField, emailField }
@@ -205,7 +284,18 @@ export default async function injectionExecutor(ctx) {
           const pw = page.locator(form.passwordField).first();
           await pw.fill('Passw0rd!', { timeout: timeoutMs }).catch(() => {});
           await pw.press('Enter', { timeout: timeoutMs }).catch(() => {});
-          await page.waitForTimeout(1500); // let the login XHR land
+          await page.waitForTimeout(1200); // let the login XHR land
+          if (loginStatuses.length === 0) {
+            // Angular can block native Enter submission when the email input
+            // (type=email) holds an invalid value — the tautology IS invalid.
+            // Force-click the submit button (toast overlays may intercept a
+            // normal click; force dispatches at the element's position).
+            try {
+              await page.locator('button[type="submit"]').first()
+                .click({ force: true, timeout: 5000 }).catch(() => {});
+              await page.waitForTimeout(1200);
+            } catch { /* no submit button present */ }
+          }
           return loginStatuses.length ? Math.max(...loginStatuses) : null;
         };
 
@@ -250,11 +340,17 @@ export default async function injectionExecutor(ctx) {
       stats.searchDomProbed = true;
       const route = `${targetUrl.replace(/\/$/, '')}/#/search?q=${encodeURIComponent(DOM_XSS_PAYLOAD)}`;
       await page.goto(route, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
-      await page.waitForTimeout(2500); // SPA render + search request
-      const reflected = await page.evaluate(
-        (marker) => document.documentElement.innerHTML.includes(marker),
-        DOM_XSS_MARKER,
-      );
+      // Poll up to ~6s for the SPA render — a single fixed wait is flaky when
+      // the machine is loaded (Phase 9 acceptance: one run missed the
+      // reflection entirely with a single 2.5s wait).
+      let reflected = false;
+      for (let attempt = 0; attempt < 12 && !reflected && !ctx.signal?.aborted; attempt++) {
+        await page.waitForTimeout(500);
+        reflected = await page.evaluate(
+          (marker) => document.documentElement.innerHTML.includes(marker),
+          DOM_XSS_MARKER,
+        );
+      }
       if (reflected) {
         const snippet = await page.evaluate((marker) => {
           const html = document.documentElement.innerHTML;
