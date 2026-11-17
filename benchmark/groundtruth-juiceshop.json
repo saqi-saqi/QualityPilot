@@ -54,6 +54,30 @@
       "severity": "high",
       "rationale": "Target serves everything over plain HTTP (localhost standalone). The security executor flags unencrypted transport per probed URL.",
       "liveCheck": { "type": "scheme-http" }
+    },
+    {
+      "id": "JS-EXP-07",
+      "ruleId": "injection-sqli",
+      "detector": "injection",
+      "severity": "high",
+      "rationale": "Juice Shop's login form is vulnerable to the documented tautology bypass: POST /rest/user/login with email \"' OR 1=1--\" returns 200 + token while a benign email returns 401 (verified live 2026-11-17). Detector: browser-submit differential on login-class form targets.",
+      "liveCheck": { "type": "sqli-login" }
+    },
+    {
+      "id": "JS-EXP-08",
+      "ruleId": "injection-sqli-error",
+      "detector": "injection",
+      "severity": "medium",
+      "rationale": "GET /rest/products/search?q=') returns 500 with a SQLITE_ERROR body — a SQL error surfaced to the client (verified live 2026-11-17). Detector: GET query-param differential (baseline 200 → mutated 500 + signature).",
+      "liveCheck": { "type": "sqli-error" }
+    },
+    {
+      "id": "JS-EXP-09",
+      "ruleId": "injection-xss-dom",
+      "detector": "injection",
+      "severity": "high",
+      "rationale": "The search query is reflected UNESCAPED into #searchValue as live markup — an <iframe src=\"javascript:…\"> payload becomes a real DOM element (verified live 2026-11-17 via the /#/search deep link). Detector: search-route DOM sink probe.",
+      "liveCheck": { "type": "dom-xss-search" }
     }
   ],
   "mustNotFind": [
