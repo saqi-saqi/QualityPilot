@@ -33,7 +33,10 @@ const log = (level, msg, data) => {
   switch (level) {
     case 'debug':
     case 'info':
-      console.log(jsonStr);
+      // stderr, not stdout: stdout is the DATA channel (report JSON/markdown).
+      // Logs on stdout corrupted redirected `--format json` captures
+      // (Phase 6: `--baseline` could not read its own baseline file).
+      console.error(jsonStr);
       break;
     case 'warn':
       console.warn(jsonStr);

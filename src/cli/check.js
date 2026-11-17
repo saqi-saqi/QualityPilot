@@ -4,7 +4,16 @@
  * Usage:
  *   qualitypilot check <url> [--fail-on critical|high|medium|low|info|none|critical,high]
  *                          [--min-score <n>] [--junit <file>] [--sarif <file>]
- *                          [--format json|junit|sarif] [--json] [--strict]
+ *                          [--baseline <file|runId>]
+ *                          [--format json|junit|sarif|markdown] [--json] [--strict]
+ *
+ *   --baseline <file|runId>  compare against a previous run: --fail-on then
+ *                            applies to NEW findings only (regressions). The
+ *                            baseline may be a JSON report from `--format json`
+ *                            or a stored run id. Unreadable baselines exit 64.
+ *   --concurrency <n>        matrix cells run in parallel (1–4, default 2).
+ *                            Browser cells share one browser process via the
+ *                            pool; no-browser cells fully parallelize.
  *
  * Runs a bounded scan of the given URL and exits non-zero if the gate fails:
  *   --fail-on <severities>  a single severity acts as a threshold ("at or above");
@@ -27,10 +36,14 @@
  *   SQA_CI_TIMEOUT    — run timeout in ms (default: 120000)
  */
 
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { toJUnitXml } from '../reporting/junit.js';
 import { toSarif } from '../reporting/sarif.js';
+import { toMarkdown } from '../reporting/markdown.js';
+import { diffRuns } from '../services/runDiff.js';
+import { extractJsonDocument, decodeCapturedOutput } from '../utils/jsonDocument.js';
 
 const EXIT_OK = 0;
 const EXIT_URL_MISSING = 64;
@@ -41,7 +54,7 @@ const EXIT_THRESHOLD_EXCEEDED = 1;
 const SEVERITY_RANK = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
 
 const FAIL_ON_SINGLE_VALUES = ['info', 'low', 'medium', 'high', 'critical', 'none'];
-const OUTPUT_FORMATS = ['text', 'json', 'junit', 'sarif'];
+const OUTPUT_FORMATS = ['text', 'json', 'junit', 'sarif', 'markdown'];
 
 /**
  * Parse a --fail-on value: a single severity/none (threshold mode) or a
@@ -75,6 +88,7 @@ export function parseArgs(argv) {
     failOn: 'none',
     failOnParsed: parseFailOn('none'),
     timeout: 120000,
+    concurrency: 2,
     maxPages: 10,
     maxDepth: 1,
     minScore: null,
@@ -83,6 +97,8 @@ export function parseArgs(argv) {
     format: null,  // null → default human-readable summary
     json: false,
     strict: false,
+    baseline: null,
+    authorizedTarget: false,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -116,23 +132,39 @@ export function parseArgs(argv) {
       opts.format = fmt;
     } else if (arg === '--json') {
       opts.json = true;
+    } else if (arg === '--baseline') {
+      opts.baseline = args[++i];
+      if (!opts.baseline) throw new Error('--baseline requires a file path or a run id');
+    } else if (arg === '--concurrency') {
+      const n = Number(args[++i]);
+      if (!Number.isFinite(n) || n < 1 || n > 4) {
+        throw new Error('Invalid --concurrency value: must be a number between 1 and 4');
+      }
+      opts.concurrency = n;
+    } else if (arg === '--authorized-target') {
+      // Phase 8: authorizes ACTIVE injection probing (differential SQLi, DOM
+      // XSS sink probes) on NON-loopback targets. Loopback targets are probed
+      // by default. Deliberately does NOT enable API-fuzz mutations — that
+      // stays behind the dashboard/API `--active-testing` combination.
+      opts.authorizedTarget = true;
     } else if (arg === '--strict') {
       opts.strict = true;
     }
   }
 
   if (!url) {
-    throw new Error('Usage: qualitypilot check <url> [--fail-on critical|high|medium|low|info|none] [--min-score <n>] [--junit <file>] [--sarif <file>] [--format json|junit|sarif]');
+    throw new Error('Usage: qualitypilot check <url> [--fail-on critical|high|medium|low|info|none] [--min-score <n>] [--junit <file>] [--sarif <file>] [--baseline <file|runId>] [--concurrency <1-4>] [--format json|junit|sarif|markdown]');
   }
 
   return { url, ...opts };
 }
 
 /** Print a compact scan summary to stdout (CI-friendly). */
-function printSummary({ url, score, findings, pages, compliance, json }) {
+function printSummary({ url, score, findings, pages, compliance, json, diff }) {
   console.log(`QualityPilot CI check`);
   console.log(`URL: ${url}`);
   console.log(`Pages: ${pages || 0} | Score: ${score || '?'}/100 | Findings: ${findings?.length || 0}`);
+  if (diff) console.log(`Baseline ${diff.baselineRunId}: ${diff.summary}`);
 
   if (compliance) {
     console.log(`WCAG: ${compliance.conformancePct || '?'}% checked | ` +
@@ -239,6 +271,69 @@ export function evaluateGate({ findings = [], score, failOn = 'none', minScore =
 }
 
 /**
+ * Load a baseline run for --baseline diffing.
+ * Accepts a JSON report file (from `--format json`), a run record JSON, or a
+ * stored run id. Throws on anything unreadable — the caller maps that to
+ * exit 64 (usage), never a silent pass.
+ */
+export async function loadBaselineRun(spec) {
+  const value = String(spec || '').trim();
+  if (!value) return null;
+
+  let data = null;
+  if (existsSync(value)) {
+    let raw;
+    try {
+      // Buffer + decodeCapturedOutput: baselines may be UTF-8, UTF-8-with-BOM
+      // or UTF-16LE (PowerShell `>` redirection), possibly with log noise
+      // around the JSON document (pre-Phase-6 captures).
+      raw = decodeCapturedOutput(await readFile(value));
+    } catch (err) {
+      throw new Error(`Baseline file unreadable: ${err.message}`);
+    }
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      // Tolerate baselines captured the old way: `--format json` output used
+      // to mix progress lines into stdout, so redirected files contain log
+      // noise around the JSON document. Extract the document instead.
+      try {
+        data = extractJsonDocument(raw);
+      } catch {
+        throw new Error(`Baseline file is not valid JSON: ${value}`);
+      }
+    }
+  } else {
+    const { getRun } = await import('../services/runManager.js');
+    data = await getRun(value);
+    if (!data) throw new Error(`Baseline not found: no file at \"${value}\" and no run with that id`);
+  }
+
+  if (!data || !Array.isArray(data.findings)) {
+    throw new Error(`Baseline has no findings array: ${value}`);
+  }
+  return data;
+}
+
+/**
+ * Gate evaluation with an optional baseline diff: when a diff is present,
+ * --fail-on applies to NEW findings only (regressions). --min-score stays an
+ * absolute check on the current run's score.
+ */
+export function evaluateBaselineGate({ findings = [], score, failOn = 'none', minScore = null, diff = null } = {}) {
+  const gateFindings = diff ? diff.newFindings : findings;
+  const gate = evaluateGate({ findings: gateFindings, score, failOn, minScore });
+  let reason = gate.reason;
+  if (diff) {
+    const baselineLabel = diff.baselineRunId || 'baseline';
+    reason = (gate.failed && diff.newFindings.length > 0)
+      ? `FAIL: ${diff.newFindings.length} new finding(s) vs baseline ${baselineLabel} (${diff.summary})`
+      : `${gate.reason} · baseline ${baselineLabel}: ${diff.summary}`;
+  }
+  return { ...gate, reason };
+}
+
+/**
  * Write the JUnit/SARIF report artifacts requested on the command line.
  * Exported for tests; skips formats that were not requested.
  */
@@ -256,7 +351,7 @@ export async function writeReportFiles(run, { junitPath, sarifPath } = {}) {
 }
 
 /** Run a bounded scan of the URL using the matrix. */
-async function runCheck({ url, timeout, maxPages, maxDepth }) {
+async function runCheck({ url, timeout, maxPages, maxDepth, concurrency, authorizedTarget }) {
   process.env.SQA_ALLOW_PRIVATE = process.env.SQA_ALLOW_PRIVATE || 'true';
   process.env.SQA_MAX_PAGES = process.env.SQA_MAX_PAGES || String(maxPages);
   process.env.SQA_MAX_DEPTH = process.env.SQA_MAX_DEPTH || String(maxDepth);
@@ -281,8 +376,8 @@ async function runCheck({ url, timeout, maxPages, maxDepth }) {
   // scores. createRunWithMatrix validates the URL up front, same as createRun.
   const { createRunWithMatrix, getRun, cancelRun } = await import('../services/runManager.js');
 
-  const runId = await createRunWithMatrix({ url, options: { maxPages, maxDepth } });
-  console.log(`Scanning ${url} (run ${runId})...`);
+  const runId = await createRunWithMatrix({ url, options: { maxPages, maxDepth, concurrency, authorizedTarget } });
+  process.stderr.write(`Scanning ${url} (run ${runId})...\n`);
 
   const deadline = Date.now() + timeout;
   let run;
@@ -319,10 +414,17 @@ export async function checkMain(argv = process.argv) {
     return EXIT_URL_MISSING;
   }
   try {
-    const { url, failOn, timeout, maxPages, maxDepth, minScore, junitPath, sarifPath, format, json, strict } = parsedArgs;
-    process.stdout.write(`QualityPilot CI check — ${url}\n`);
+    const { url, failOn, timeout, maxPages, maxDepth, minScore, junitPath, sarifPath, format, json, strict, baseline, concurrency, authorizedTarget } = parsedArgs;
+    // Machine formats (json/junit/sarif/markdown) keep stdout PURE — progress
+    // lines and the gate reason go to stderr, so `check --format json > out.json`
+    // produces a file that is directly machine-readable (Phase 6 `--baseline`
+    // reads these files). Text mode keeps the historical stdout layout.
+    const outFormat = format || (json ? 'json' : 'text');
+    const machineOutput = outFormat !== 'text';
+    const progress = machineOutput ? process.stderr : process.stdout;
+    progress.write(`QualityPilot CI check — ${url}\n`);
 
-    const run = await runCheck({ url, timeout, maxPages, maxDepth });
+    const run = await runCheck({ url, timeout, maxPages, maxDepth, concurrency, authorizedTarget });
 
     // A failed scan must never exit 0: without this check a broken scan
     // (e.g. Playwright browsers not installed, target unreachable) reported
@@ -348,10 +450,26 @@ export async function checkMain(argv = process.argv) {
       }
     })();
 
+    // Baseline diff (Phase 6): --fail-on applies to NEW findings only.
+    let diff = null;
+    if (baseline) {
+      let baselineRun;
+      try {
+        baselineRun = await loadBaselineRun(baseline);
+      } catch (err) {
+        console.error(`ERROR: ${err.message}`);
+        return EXIT_URL_MISSING; // 64 — a bad baseline is a usage error, never a silent pass
+      }
+      diff = diffRuns(baselineRun, run);
+      diff.baselineRunId = baselineRun.runId || String(baseline);
+    }
+
+    // CI gate: evaluate BEFORE output so json/markdown carry the verdict.
+    const gate = evaluateBaselineGate({ findings, score: run.score, failOn, minScore, diff });
+
     // Write requested report artifacts (JUnit XML / SARIF JSON).
     await writeReportFiles(run, { junitPath, sarifPath });
 
-    const outFormat = format || (json ? 'json' : 'text');
     if (outFormat === 'json') {
       const out = {
         url,
@@ -359,10 +477,20 @@ export async function checkMain(argv = process.argv) {
         score: run.score,
         status: run.status,
         findings,
+        ...(diff ? {
+          baseline: {
+            runId: diff.baselineRunId,
+            summary: diff.summary,
+            scoreDelta: diff.scoreDelta,
+            newFindings: diff.newFindings,
+            resolvedFindings: diff.resolvedFindings,
+            persistentCount: diff.persistentFindings.length,
+          },
+        } : {}),
         compliance,
         threshold: failOn,
         minScore,
-        failed: evaluateGate({ findings, score: run.score, failOn, minScore }).failed,
+        failed: gate.failed,
         timestamp: new Date().toISOString(),
       };
       process.stdout.write(JSON.stringify(out, null, 2));
@@ -372,13 +500,13 @@ export async function checkMain(argv = process.argv) {
     } else if (outFormat === 'sarif') {
       process.stdout.write(JSON.stringify(toSarif(run), null, 2));
       process.stdout.write('\n');
+    } else if (outFormat === 'markdown') {
+      process.stdout.write(toMarkdown(run, { diff, gate }));
     } else {
-      printSummary({ url, score: run.score, findings, pages: run.pages?.length, compliance, json });
+      printSummary({ url, score: run.score, findings, pages: run.pages?.length, compliance, json, diff });
     }
 
-    // CI gate: evaluate and print a one-line exit reason.
-    const gate = evaluateGate({ findings, score: run.score, failOn, minScore });
-    process.stdout.write(`${gate.reason}\n`);
+    (machineOutput ? process.stderr : process.stdout).write(`${gate.reason}\n`);
     return gate.exitCode;
   } catch (err) {
     console.error(`ERROR: ${err.message}`);

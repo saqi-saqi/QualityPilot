@@ -25,7 +25,7 @@
 
 const NO_BROWSER_EXECUTORS = new Set(['api-contract', 'security']);
 const BROWSER_VIEWPORT_EXECUTORS = new Set(['accessibility-deep', 'perf', 'visual']);
-const BROWSER_ONLY_EXECUTORS = new Set(['e2e']);
+const BROWSER_ONLY_EXECUTORS = new Set(['e2e', 'injection']);
 
 /**
  * Build the execution matrix for a plan.

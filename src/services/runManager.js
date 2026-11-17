@@ -826,6 +826,7 @@ export async function createRunWithMatrix({ url, options = {}, plan: submittedPl
     options: {
       maxPages: Math.min(Math.max(options.maxPages || 1, 1), 100),
       maxDepth: options.maxDepth || 2,
+      concurrency: Math.min(Math.max(Number(options.concurrency) || 1, 1), 4),
       browsers: options.browsers || ['chromium'],
       viewports: options.viewports || null,    // null = infer from crawl
       executors: options.executors || null,    // null = use plan defaults
@@ -1072,6 +1073,7 @@ export async function executeRunWithMatrix(runId, payload) {
         plan, browserPool, createFinding, onEvent, signal,
         options: {
           dedup: run.options.dedup,
+          concurrency: run.options.concurrency || 1,
           screenshotsDir: SCREENSHOTS_DIR,
           evidenceDir: evidenceDirFor(runId),
           runId,
