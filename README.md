@@ -272,6 +272,54 @@ npm run check -- https://staging.example.com --max-pages 10 --fail-on critical,h
 - `--min-score 80` → exit 1 when the quality score drops below 80.
 - JUnit XML and SARIF 2.1.0 output plug into GitHub Actions, GitLab, Azure DevOps, and code-scanning UIs.
 
+### Regression-only gating (`--baseline`)
+
+On a second and every later scan, fail the build only on **new** findings — pre-existing issues stop blocking every PR:
+
+```bash
+# First run — the JSON report becomes the baseline (stdout is pure JSON; progress goes to stderr):
+qualitypilot check https://staging.example.com --format json > baseline.json
+
+# Every later run — exit 1 only when a NEW finding appears:
+qualitypilot check https://staging.example.com --baseline baseline.json --fail-on low
+```
+
+- `--baseline <file|runId>` accepts a saved `--format json` report or a stored run id; an unreadable baseline is a usage error (exit 64), never a silent pass.
+- `--fail-on` then applies to **new** findings only; `--min-score` stays an absolute check on the current run's score.
+- The JSON output gains a `baseline` block (`newFindings`, `resolvedFindings`, `persistentCount`, `scoreDelta`).
+
+### Injection probing (Phase 8)
+
+A dedicated `injection` executor runs three bounded, non-destructive probes and classifies results by **response differentials** (status class, length, and SQL error-signature matching), not by payload presence:
+
+- **GET query-param differential** — mutating a captured query param (e.g. a search `q`) that turns a healthy 200 into a 500 with a SQL error signature (`SQLITE_ERROR`, MySQL/PostgreSQL/Oracle/MSSQL/Sequelize patterns) → `injection-sqli-error`.
+- **Login-form auth bypass** — submits login-class forms twice (benign values, then a tautology email) and compares the login XHR status: 401 → 200 is an authentication bypass → `injection-sqli` (high). The mutated response body is never captured (it contains credentials). Account-creation pages are excluded — probes must not create data.
+- **Search-route DOM sink** — loads the SPA search route with an executable-markup payload and checks whether the raw payload became LIVE DOM (not escaped text) → `injection-xss-dom`.
+
+Safety model: probes run **by default on loopback targets only** (`localhost`, `127.0.0.0/8`, `::1`). Non-loopback targets require the explicit flag:
+
+```bash
+qualitypilot check https://staging.example.com --authorized-target
+```
+
+No `DROP`/stacked payloads exist; login sessions created by a probe die with the scan's browser context. On clean apps the probes stay silent (verified: authorized scan of the RealWorld Conduit demo → 0 injection findings).
+### Speed (`--concurrency`)
+
+Matrix cells run in parallel — browser cells share one browser process through the pool, no-browser cells (security, API contract, links/console/network) fully parallelize:
+
+```bash
+qualitypilot check https://staging.example.com --concurrency 4   # 1–4, default 2
+```
+
+Form fuzzing loads each page **once per target** (safe mode never submits, so there is no server traffic to pace) and re-navigates only after a thrown input, instead of re-navigating for every single input.
+### Job-summary markdown
+
+`--format markdown` renders a compact gate summary (verdict, severity counts, top rules, new-vs-baseline diff) for `$GITHUB_STEP_SUMMARY`, PR comments, or tickets:
+
+```bash
+qualitypilot check https://staging.example.com --baseline baseline.json --format markdown >> "$GITHUB_STEP_SUMMARY"
+```
+
 ## 🎯 Benchmarked Recall & False-Positive Triage
 
 We hold the scanner to the same bar it holds your app. Two proof artifacts ship in the repo and run on demand:
