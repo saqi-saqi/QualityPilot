@@ -837,6 +837,8 @@ export async function createRunWithMatrix({ url, options = {}, plan: submittedPl
       // Monitoring metadata (Rung 3) — carried through to execution so the
       // publisher can filter regressions and notify the right webhook.
       ...(options.monitorId ? { monitorId: options.monitorId } : {}),
+      // CLI `--login <recording>` (Phase 9): reuse a recorded login session.
+      ...(options.loginRecording ? { loginRecording: options.loginRecording } : {}),
       ...(options.previousRunId ? { previousRunId: options.previousRunId } : {}),
       ...(options.onlyNewFindings != null ? { onlyNewFindings: options.onlyNewFindings } : {}),
       ...(options.webhookUrl ? { webhookUrl: options.webhookUrl } : {}),
@@ -919,14 +921,17 @@ export async function executeRunWithMatrix(runId, payload) {
       let recordedSession = null;
       const recordedSessions = {};
       let sessionCookie = null;
-      if (run.options.monitorId) {
+      // Recorded sessions come from monitors (run.options.monitorId) or the
+      // CLI `--login <recording>` flag (Phase 9).
+      const sessionKey = run.options.monitorId || run.options.loginRecording;
+      if (sessionKey) {
         const { SessionStore } = await import('./sessionStore.js');
         const sessionStore = new SessionStore();
         const requestedRoles = Array.isArray(run.options.roles) && run.options.roles.length
           ? run.options.roles
           : ['default'];
         for (const role of requestedRoles) {
-          const session = await sessionStore.loadSession(run.options.monitorId, role).catch(err => {
+          const session = await sessionStore.loadSession(sessionKey, role).catch(err => {
             throw new Error(`Failed to load recorded session for role "${role}": ${err.message}`);
           });
           if (!session) {
@@ -1011,6 +1016,22 @@ export async function executeRunWithMatrix(runId, payload) {
         plan = approvePlan(result.plan);
         // The auto-approved inferred plan goes through the same URL gate.
         await validatePlanUrls(plan, run.url);
+      }
+
+      // ─── 2.5 OpenAPI import (Phase 9) — deterministic endpoint surface ───
+      // Replaces the inferred apiEndpoints with the spec's. Runs after plan
+      // approval so both inferred and pre-approved plans get the spec surface.
+      if (run.options.openapiSpec) {
+        try {
+          const { openApiToEndpoints } = await import('../services/openapiImport.js');
+          const imported = openApiToEndpoints(run.options.openapiSpec, { targetUrl: run.url });
+          if (imported.endpoints.length > 0) {
+            plan = { ...plan, apiEndpoints: imported.endpoints };
+            emitEvent(runId, `OpenAPI import: ${imported.endpoints.length} endpoint(s) from ${imported.title || 'spec'} (v${imported.version || '?'})`);
+          }
+        } catch (err) {
+          emitEvent(runId, `OpenAPI import failed: ${err.message}`);
+        }
       }
 
       // Persist the approved plan so GET /api/runs/:id can show it.

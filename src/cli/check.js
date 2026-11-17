@@ -99,6 +99,8 @@ export function parseArgs(argv) {
     strict: false,
     baseline: null,
     authorizedTarget: false,
+    openapi: null,
+    loginRecording: null,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -147,6 +149,12 @@ export function parseArgs(argv) {
       // by default. Deliberately does NOT enable API-fuzz mutations — that
       // stays behind the dashboard/API `--active-testing` combination.
       opts.authorizedTarget = true;
+    } else if (arg === '--openapi') {
+      opts.openapi = args[++i];
+      if (!opts.openapi) throw new Error('--openapi requires a spec file path');
+    } else if (arg === '--login') {
+      opts.loginRecording = args[++i];
+      if (!opts.loginRecording) throw new Error('--login requires a recorded session name');
     } else if (arg === '--strict') {
       opts.strict = true;
     }
@@ -351,7 +359,7 @@ export async function writeReportFiles(run, { junitPath, sarifPath } = {}) {
 }
 
 /** Run a bounded scan of the URL using the matrix. */
-async function runCheck({ url, timeout, maxPages, maxDepth, concurrency, authorizedTarget }) {
+async function runCheck({ url, timeout, maxPages, maxDepth, concurrency, authorizedTarget, openapiSpec, loginRecording }) {
   process.env.SQA_ALLOW_PRIVATE = process.env.SQA_ALLOW_PRIVATE || 'true';
   process.env.SQA_MAX_PAGES = process.env.SQA_MAX_PAGES || String(maxPages);
   process.env.SQA_MAX_DEPTH = process.env.SQA_MAX_DEPTH || String(maxDepth);
@@ -376,7 +384,7 @@ async function runCheck({ url, timeout, maxPages, maxDepth, concurrency, authori
   // scores. createRunWithMatrix validates the URL up front, same as createRun.
   const { createRunWithMatrix, getRun, cancelRun } = await import('../services/runManager.js');
 
-  const runId = await createRunWithMatrix({ url, options: { maxPages, maxDepth, concurrency, authorizedTarget } });
+  const runId = await createRunWithMatrix({ url, options: { maxPages, maxDepth, concurrency, authorizedTarget, openapiSpec, loginRecording } });
   process.stderr.write(`Scanning ${url} (run ${runId})...\n`);
 
   const deadline = Date.now() + timeout;
@@ -414,7 +422,20 @@ export async function checkMain(argv = process.argv) {
     return EXIT_URL_MISSING;
   }
   try {
-    const { url, failOn, timeout, maxPages, maxDepth, minScore, junitPath, sarifPath, format, json, strict, baseline, concurrency, authorizedTarget } = parsedArgs;
+    const { url, failOn, timeout, maxPages, maxDepth, minScore, junitPath, sarifPath, format, json, strict, baseline, concurrency, authorizedTarget, openapi, loginRecording } = parsedArgs;
+
+    // Phase 9: parse the OpenAPI spec at CLI time — unreadable specs are
+    // usage errors (exit 64), not silent run failures.
+    let openapiSpec = null;
+    if (openapi) {
+      try {
+        const { parseOpenApiSpecText } = await import('../services/openapiImport.js');
+        openapiSpec = parseOpenApiSpecText(await readFile(openapi, 'utf8'));
+      } catch (err) {
+        console.error(`ERROR: ${err.message}`);
+        return EXIT_URL_MISSING;
+      }
+    }
     // Machine formats (json/junit/sarif/markdown) keep stdout PURE — progress
     // lines and the gate reason go to stderr, so `check --format json > out.json`
     // produces a file that is directly machine-readable (Phase 6 `--baseline`
@@ -424,7 +445,7 @@ export async function checkMain(argv = process.argv) {
     const progress = machineOutput ? process.stderr : process.stdout;
     progress.write(`QualityPilot CI check — ${url}\n`);
 
-    const run = await runCheck({ url, timeout, maxPages, maxDepth, concurrency, authorizedTarget });
+    const run = await runCheck({ url, timeout, maxPages, maxDepth, concurrency, authorizedTarget, openapiSpec, loginRecording });
 
     // A failed scan must never exit 0: without this check a broken scan
     // (e.g. Playwright browsers not installed, target unreachable) reported
