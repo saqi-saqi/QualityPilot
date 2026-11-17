@@ -157,6 +157,7 @@ export async function buildTestPlan({ pages, targetUrl, siteOrigin, llmOpts = {}
       'api-contract',
       'fuzz',
       'injection',
+      'authz',
       'accessibility-deep',
       'perf',
       'visual',

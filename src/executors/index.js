@@ -15,6 +15,7 @@ import { registerExecutor, hasExecutor } from '../services/executorRegistry.js';
 import apiContract from './apiContract.js';
 import security from './security.js';
 import injection from './injection.js';
+import authz from './authz.js';
 import fuzz from './fuzz.js';
 import e2e from './e2e.js';
 import a11yDeep from './a11yDeep.js';
@@ -25,6 +26,7 @@ const REGISTRATIONS = [
   ['api-contract',       apiContract,  { description: 'Probe API endpoints + verify status + schema shape' }],
   ['security',           security,     { description: 'Security headers, mixed content, cookie audit' }],
   ['injection',          injection,    { description: 'Differential SQL injection + DOM XSS sink probe (loopback default; remote needs --authorized)' }],
+  ['authz',              authz,        { description: 'Anonymous-reachability probe for admin-namespaced APIs' }],
   ['fuzz',               fuzz,         { description: 'Input mutation + boundary testing' }],
   ['e2e',                e2e,          { description: 'Playwright flow runner' }],
   ['accessibility-deep', a11yDeep,     { description: 'axe-core accessibility audit' }],
