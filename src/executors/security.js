@@ -12,7 +12,22 @@
  *   • CSP Level 3
  */
 
+import { rollupAcrossPages } from '../services/findingRollup.js';
+
 // ─── security header rules ──────────────────────────────────────────
+
+// Findings that describe a SITE-WIDE header configuration, not a page state.
+// These are rolled up to one finding per (rule, origin) — see
+// services/findingRollup.js for why (Phase F: 80 findings for 8 fixes).
+// Cookies stay per page (the cookie NAME is part of the finding), and mixed
+// content stays per page (it depends on that page's resources).
+function isSiteWideHeaderFinding(finding) {
+  const ruleId = String(finding.ruleId || '');
+  if (ruleId.startsWith('header-') || ruleId === 'transport-http') return true;
+  if (ruleId.startsWith('csp-')) return true;
+  if (ruleId.startsWith('cors-')) return true;
+  return false;
+}
 
 const HEADER_RULES = [
   {
@@ -409,14 +424,15 @@ export default async function securityExecutor(ctx) {
     }
   }
 
-  ctx.onEvent?.(`security complete: ${findings.length} findings`);
+  const rolled = rollupAcrossPages(findings, isSiteWideHeaderFinding);
+  ctx.onEvent?.(`security complete: ${rolled.length} findings`);
   return {
-    findings,
+    findings: rolled,
     stats: {
       pagesAudited: urls.size,
-      headerFindings: findings.filter(f => f.ruleId?.startsWith('header-')).length,
-      cookieFindings: findings.filter(f => f.ruleId?.startsWith('cookie-')).length,
-      mixedContentFindings: findings.filter(f => f.ruleId?.startsWith('mixed-content')).length,
+      headerFindings: rolled.filter(f => f.ruleId?.startsWith('header-')).length,
+      cookieFindings: rolled.filter(f => f.ruleId?.startsWith('cookie-')).length,
+      mixedContentFindings: rolled.filter(f => f.ruleId?.startsWith('mixed-content')).length,
     },
   };
 }

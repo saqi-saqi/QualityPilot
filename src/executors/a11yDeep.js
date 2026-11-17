@@ -16,6 +16,29 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { config } from '../utils/config.js';
+import { rollupAcrossPages } from '../services/findingRollup.js';
+
+/**
+ * axe rules whose violation is a property of the DOCUMENT TEMPLATE, not of a
+ * page instance: every page missing <html lang> is one template fix. These
+ * roll up to one finding per origin with affectedPages[] (Phase 6).
+ * Page-scoped rules (image-alt, link-name, color-contrast, …) stay per page.
+ */
+export const DOCUMENT_SCOPED_AXE_RULES = new Set([
+  'html-has-lang',
+  'html-xml-lang-mismatch',
+  'document-title',
+  'landmark-one-main',
+  'meta-viewport',
+  'meta-viewport-large',
+]);
+
+/** True when an axe-* finding describes the document rather than one page. */
+export function isDocumentScopedAxeFinding(finding) {
+  const ruleId = String(finding?.ruleId || '');
+  if (!ruleId.startsWith('axe-')) return false;
+  return DOCUMENT_SCOPED_AXE_RULES.has(ruleId.slice(4));
+}
 
 const AXE_RULE_TO_SEVERITY = {
   critical: 'critical',
@@ -179,6 +202,7 @@ export default async function a11yDeepExecutor(ctx) {
     }
   }
 
-  ctx.onEvent?.(`a11y-deep complete: ${findings.length} findings`);
-  return { findings, stats: { pagesScanned: pages.length, ruleCount: rules.length } };
+  const rolled = rollupAcrossPages(findings, isDocumentScopedAxeFinding);
+  ctx.onEvent?.(`a11y-deep complete: ${rolled.length} findings`);
+  return { findings: rolled, stats: { pagesScanned: pages.length, ruleCount: rules.length } };
 }

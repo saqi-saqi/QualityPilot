@@ -140,6 +140,43 @@ export async function fuzzApiField(target, value, ctx) {
 }
 
 /**
+ * Classify what a form-fill interaction produced, from the collectors.
+ * Phase 0 Fix E2 semantics: pageerror is page-level (first-party) and stays
+ * an error signal; console errors are attributed to the script URL that
+ * logged them — third-party console noise is demoted to INFO (kept, NOT
+ * discarded — payment/auth widget noise can matter) unless a first-party
+ * error is also present. No errors at all → clean outcome.
+ */
+function classifyFormOutcome({ pageErrors, consoleErrors, siteOrigin, responseStatus }) {
+  if (!pageErrors.length && !consoleErrors.length) {
+    return { status: responseStatus, threw: false };
+  }
+  const isThirdParty = (u) => {
+    if (!u || !siteOrigin) return false;
+    try { return new URL(u).origin !== siteOrigin; } catch { return false; }
+  };
+  const thirdParty = consoleErrors.filter((e) => isThirdParty(e.url));
+  const firstParty = consoleErrors.filter((e) => !isThirdParty(e.url));
+  if (pageErrors.length === 0 && firstParty.length === 0 && thirdParty.length > 0) {
+    return {
+      status: responseStatus,
+      threw: false,
+      info: true,
+      error: thirdParty.map((e) => `[third-party] ${e.text}`).join('\n'),
+    };
+  }
+  return {
+    status: responseStatus,
+    threw: true,
+    error: [
+      ...pageErrors,
+      ...firstParty.map((e) => e.text),
+      ...thirdParty.map((e) => `[third-party] ${e.text}`),
+    ].join('\n'),
+  };
+}
+
+/**
  * Exercise a browser form field with a single mutated value. By default this
  * never submits the form, so it can detect client-side crashes without
  * changing server data. Submission is available only for explicitly
@@ -196,35 +233,12 @@ export async function fuzzFormField(target, value, ctx) {
     }
 
     if (pageErrors.length || consoleErrors.length) {
-      // Phase 0 Fix E2 — signature-first console classification: pageerror is
-      // page-level (first-party by origin) and stays an error signal. Console
-      // errors are attributed to the script URL that logged them; third-party
-      // console noise is demoted to INFO (kept, NOT discarded — payment/auth
-      // widget noise can matter) unless a first-party error is also present.
-      const siteOrigin = (() => { try { return new URL(target.pageUrl).origin; } catch { return null; } })();
-      const isThirdParty = (u) => {
-        if (!u || !siteOrigin) return false;
-        try { return new URL(u).origin !== siteOrigin; } catch { return false; }
-      };
-      const thirdParty = consoleErrors.filter((e) => isThirdParty(e.url));
-      const firstParty = consoleErrors.filter((e) => !isThirdParty(e.url));
-      if (pageErrors.length === 0 && firstParty.length === 0 && thirdParty.length > 0) {
-        return {
-          status: responseStatus,
-          threw: false,
-          info: true,
-          error: thirdParty.map((e) => `[third-party] ${e.text}`).join('\n'),
-        };
-      }
-      return {
-        status: responseStatus,
-        threw: true,
-        error: [
-          ...pageErrors,
-          ...firstParty.map((e) => e.text),
-          ...thirdParty.map((e) => `[third-party] ${e.text}`),
-        ].join('\n'),
-      };
+      return classifyFormOutcome({
+        pageErrors,
+        consoleErrors,
+        siteOrigin: (() => { try { return new URL(target.pageUrl).origin; } catch { return null; } })(),
+        responseStatus,
+      });
     }
     return { status: responseStatus, threw: false };
   } catch (error) {
@@ -241,6 +255,152 @@ export async function fuzzFormField(target, value, ctx) {
   } finally {
     await page.close().catch(() => {});
   }
+}
+
+// ─── batched form-target fuzzing (Phase 7) ───────────────────────────
+
+/**
+ * Fuzz a form target with ALL its inputs over ONE page load.
+ *
+ * The single-shot fuzzFormField() re-navigated for every input — 21 targets
+ * × ~12 inputs ≈ 250 navigations ≈ 409s of the 644s Phase F Juice Shop scan.
+ * Navigation is only needed to RESET page state, so the batched path:
+ *   • loads the page once,
+ *   • fills each input in sequence (safe mode never submits → no server
+ *     traffic → no polite pacing needed; authorized submit mode keeps it),
+ *   • re-navigates only after a thrown outcome (the page may be broken, and
+ *     cascading errors on a dead page would fabricate false positives),
+ *   • keeps per-input detection semantics: collectors are cleared after each
+ *     classification, exactly like the single-shot page-lifetime window.
+ *
+ * Returns one outcome per input, index-aligned with `inputs`.
+ */
+export async function fuzzFormTargetBatched(target, inputs, ctx) {
+  const results = new Array(inputs.length);
+  if (!ctx.context) {
+    for (let i = 0; i < inputs.length; i++) {
+      results[i] = { status: null, threw: false, skipped: true, reason: 'no-browser-context' };
+    }
+    return results;
+  }
+
+  const timeoutMs = ctx.options?.timeout ?? 10000;
+  const allowActive = ctx.options?.allowActiveFuzz === true && Boolean(target.submitSelector);
+  const paceMs = allowActive ? (ctx.options?.delayMs ?? 100) : 0; // pacing protects the SERVER; safe-mode fills send no requests
+  const siteOrigin = (() => { try { return new URL(target.pageUrl).origin; } catch { return null; } })();
+
+  const page = await ctx.context.newPage();
+
+  // One listener set per page. Collectors are cleared after each input's
+  // classification, so every input is judged on its own window.
+  let pageErrors = [];
+  let consoleErrors = [];
+  let responseStatus = null;
+  if (typeof page.on === 'function') {
+    page.on('pageerror', (error) => pageErrors.push(error?.message || String(error)));
+    page.on('console', (message) => {
+      if (message?.type?.() === 'error') {
+        let url = null;
+        try { url = message.location?.()?.url ?? null; } catch {}
+        consoleErrors.push({ text: message.text?.() || 'Console error', url });
+      }
+    });
+    page.on('response', (response) => {
+      try {
+        if (response.request?.().isNavigationRequest?.() || response.status() >= 500) {
+          responseStatus = response.status();
+        }
+      } catch {}
+    });
+  }
+
+  let needsNavigation = true;
+  // A field that is still not actionable after the fill's own full actionability
+  // timeout will not become fillable on retry — Juice Shop's contact page burned
+  // 135s + 116s this way (12 inputs × 10s each, Phase 7 measurement). After the
+  // first actionability skip, skip the remaining inputs and say so.
+  let unactionable = false;
+  try {
+    for (let i = 0; i < inputs.length; i++) {
+      if (ctx.signal?.aborted) break;
+
+      if (unactionable) {
+        results[i] = { status: null, threw: false, skipped: true, reason: 'unactionable-target' };
+        continue;
+      }
+
+      if (needsNavigation) {
+        try {
+          const initialResponse = await page.goto(target.pageUrl, {
+            waitUntil: 'domcontentloaded',
+            timeout: timeoutMs,
+          });
+          responseStatus = initialResponse?.status?.() ?? null;
+          needsNavigation = false;
+        } catch (err) {
+          const msg = err?.message || String(err);
+          if (/timeout|abort|econnrefused|enotfound|eai_again|getaddrinfo|dns/i.test(msg)) {
+            results[i] = { status: null, threw: true, environmental: true, error: msg };
+          } else {
+            results[i] = { status: null, threw: true, error: msg };
+          }
+          continue; // stay broken — remaining inputs will fail too, honestly
+        }
+      }
+
+      let threw = false;
+      try {
+        const baseLocator = page.locator(target.fieldSelector);
+        const locator = typeof baseLocator.first === 'function' ? baseLocator.first() : baseLocator;
+        if (typeof locator.fill !== 'function') {
+          results[i] = { status: responseStatus, threw: false, skipped: true, reason: 'field-not-fillable' };
+          continue;
+        }
+        await locator.fill(inputs[i].value, { timeout: timeoutMs });
+        if (allowActive) {
+          await page.locator(target.submitSelector).click({ timeout: timeoutMs });
+          if (typeof page.waitForLoadState === 'function') {
+            await page.waitForLoadState('domcontentloaded', { timeout: timeoutMs }).catch(() => {});
+          }
+        }
+      } catch (error) {
+        if (/locator|selector|element.*not found/i.test(error?.message || '')) {
+          results[i] = { status: responseStatus, threw: false, skipped: true, reason: 'selector-not-found' };
+          unactionable = true;
+          ctx.onEvent?.(`fuzz target ${target.fieldSelector} on ${target.pageUrl}: field not actionable after ${timeoutMs}ms — skipping remaining ${inputs.length - i - 1} input(s)`);
+          continue;
+        }
+        const msg = error?.message || String(error);
+        if (/timeout|abort|econnrefused|enotfound|eai_again|getaddrinfo|dns/i.test(msg)) {
+          results[i] = { status: responseStatus, threw: true, environmental: true, error: msg };
+        } else {
+          results[i] = { status: responseStatus, threw: true, error: msg };
+        }
+        threw = true;
+      }
+
+      if (!results[i]) {
+        const outcome = classifyFormOutcome({ pageErrors, consoleErrors, siteOrigin, responseStatus });
+        results[i] = outcome;
+        if (outcome.threw) threw = true;
+      }
+
+      // Clear the window AFTER classification so late errors from this input
+      // don't bleed into the next one's verdict.
+      pageErrors = [];
+      consoleErrors = [];
+
+      if (threw) needsNavigation = true;
+
+      if (paceMs > 0 && i < inputs.length - 1 && !ctx.signal?.aborted) {
+        await new Promise(r => setTimeout(r, paceMs));
+      }
+    }
+  } finally {
+    await page.close().catch(() => {});
+  }
+
+  return results;
 }
 
 // ─── main executor ───────────────────────────────────────────────────
@@ -269,16 +429,31 @@ export default async function fuzzExecutor(ctx) {
     stats.totalInputs += inputs.length;
     let failures = 0;
     let rateLimited = false;
+    const targetLabel = target.apiEndpointRef
+      ? `${target.apiEndpointRef}.${target.field}`
+      : `${target.pageUrl} ${target.fieldSelector}`;
+    const targetStart = Date.now();
 
-    for (let i = 0; i < inputs.length; i++) {
-      if (ctx.signal?.aborted) break;
-
-      let result;
-      if (isApiTarget) {
-        result = await fuzzApiField(target, inputs[i].value, ctx);
-      } else {
-        result = await fuzzFormField(target, inputs[i].value, ctx);
+    // One outcome per input. API targets: sequential requests with polite
+    // pacing. Form targets: ONE page load for the whole target (Phase 7 —
+    // the old per-input re-navigation was ~250 navigations ≈ 409s of the
+    // 644s Phase F Juice Shop scan).
+    const outcomes = [];
+    if (isApiTarget) {
+      for (let i = 0; i < inputs.length; i++) {
+        if (ctx.signal?.aborted) break;
+        const result = await fuzzApiField(target, inputs[i].value, ctx);
+        outcomes.push(result);
+        if (i < inputs.length - 1 && delayMs > 0 && !ctx.signal?.aborted) {
+          await new Promise(r => setTimeout(r, delayMs));
+        }
       }
+    } else {
+      outcomes.push(...await fuzzFormTargetBatched(target, inputs, ctx));
+    }
+
+    for (let i = 0; i < outcomes.length; i++) {
+      const result = outcomes[i];
 
       if (result.skipped) {
         stats.skippedInputs++;
@@ -290,7 +465,7 @@ export default async function fuzzExecutor(ctx) {
       if (result.status === 429 || result.status === 503) {
         rateLimited = true;
         stats.rateLimitedTargets++;
-        ctx.onEvent?.(`rate limited — backing off (target ${target.apiEndpointRef || target.fieldSelector} returned ${result.status}; skipping remaining ${inputs.length - i - 1} iteration(s))`);
+        ctx.onEvent?.(`rate limited — backing off (target ${targetLabel} returned ${result.status}; skipping remaining ${outcomes.length - i - 1} iteration(s))`);
         break;
       }
 
@@ -343,17 +518,13 @@ export default async function fuzzExecutor(ctx) {
             : 'Validate + sanitize the field on the server side. Reject malformed input with 400 instead of crashing or returning 5xx.',
         }));
       }
-
-      // Polite pacing between requests (configurable via options.delayMs).
-      if (i < inputs.length - 1 && delayMs > 0 && !ctx.signal?.aborted) {
-        await new Promise(r => setTimeout(r, delayMs));
-      }
     }
 
+    const durationS = ((Date.now() - targetStart) / 1000).toFixed(1);
     if (rateLimited) {
-      ctx.onEvent?.(`Fuzz target ${target.apiEndpointRef || target.fieldSelector}: stopped early (rate limited), ${failures} failure(s) recorded so far`);
+      ctx.onEvent?.(`Fuzz target ${targetLabel}: stopped early (rate limited), ${failures} failure(s) recorded so far (${durationS}s)`);
     } else {
-      ctx.onEvent?.(`Fuzz target ${target.apiEndpointRef || target.fieldSelector}: ${failures}/${inputs.length} failures`);
+      ctx.onEvent?.(`Fuzz target ${targetLabel}: ${failures}/${inputs.length} failures (${durationS}s)`);
     }
   }
 
