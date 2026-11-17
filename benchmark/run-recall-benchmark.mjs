@@ -94,6 +94,12 @@ async function verifyLiveCheck(check, baseUrl) {
     const res = await fetch(root + '/rest/products/search?q=' + encodeURIComponent("')"));
     return { holds: res.status === 500 };
   }
+  if (check.type === 'admin-anon') {
+    // Verified live 2026-11-17: the admin-namespaced config endpoint answers
+    // 200 anonymously on the pinned target.
+    const res = await fetch(root + '/rest/admin/application-configuration');
+    return { holds: res.status === 200 };
+  }
   if (check.type === 'dom-xss-search') {
     // Browser-based: the sink is client-side rendering (no fetch can verify it).
     const { chromium } = await import('playwright');

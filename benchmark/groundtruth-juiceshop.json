@@ -78,6 +78,14 @@
       "severity": "high",
       "rationale": "The search query is reflected UNESCAPED into #searchValue as live markup — an <iframe src=\"javascript:…\"> payload becomes a real DOM element (verified live 2026-11-17 via the /#/search deep link). Detector: search-route DOM sink probe.",
       "liveCheck": { "type": "dom-xss-search" }
+    },
+    {
+      "id": "JS-EXP-10",
+      "ruleId": "authz-missing",
+      "detector": "authz",
+      "severity": "medium",
+      "rationale": "GET /rest/admin/application-configuration and /rest/admin/application-version answer 200 with full config JSON when requested anonymously (verified live 2026-11-17) — admin-namespaced APIs reachable without authentication.",
+      "liveCheck": { "type": "admin-anon" }
     }
   ],
   "mustNotFind": [

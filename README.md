@@ -288,6 +288,15 @@ qualitypilot check https://staging.example.com --baseline baseline.json --fail-o
 - `--fail-on` then applies to **new** findings only; `--min-score` stays an absolute check on the current run's score.
 - The JSON output gains a `baseline` block (`newFindings`, `resolvedFindings`, `persistentCount`, `scoreDelta`).
 
+### Access control + spec-driven scanning (Phase 9)
+
+- **`authz` executor** — captured GET endpoints under an `/admin` namespace are re-requested anonymously; a 2xx answer is `authz-missing` (admin APIs must require an authenticated privileged session). Response bodies are deliberately not recorded (admin payloads may contain secrets). Non-admin endpoints (e.g. a `whoami` that returns an empty user anonymously) are correctly ignored.
+- **`--openapi <spec.yml|json>`** — replaces the inferred API surface with the spec's, deterministically: every path × method becomes an endpoint, query params and JSON bodies are materialized from the schema (examples > defaults > type dummies), and a relative `servers[0].url` resolves same-origin onto the target. Unreadable specs are usage errors (exit 64).
+- **`--login <recording>`** — replays a recorded login session (recorded via the dashboard) against the target: the crawl and browser cells run authenticated, and the API contract probes carry the session cookie. Sessions live encrypted in `data/sessions/`.
+
+```bash
+qualitypilot check http://localhost:3000 --openapi swagger.yml --login juice-shop-cli
+```
 ### Injection probing (Phase 8)
 
 A dedicated `injection` executor runs three bounded, non-destructive probes and classifies results by **response differentials** (status class, length, and SQL error-signature matching), not by payload presence:
