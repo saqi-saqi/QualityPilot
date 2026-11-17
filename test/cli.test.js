@@ -214,6 +214,43 @@ describe('check evaluateGate', () => {
   });
 });
 
+// ─── report command (Phase 10) ───────────────────────────────────────
+
+describe('qualitypilot report command', () => {
+  it('writes a standalone HTML report from a saved run JSON', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'sqa-report-test-'));
+    try {
+      const runFile = path.join(dir, 'run.json');
+      await import('node:fs/promises').then(fs => fs.writeFile(runFile, JSON.stringify({
+        runId: 'run_report_test',
+        url: 'https://example.com',
+        score: 64,
+        findings: [
+          { title: 'Missing CSP', severity: 'high', ruleId: 'header-content-security-policy', pageUrl: 'https://example.com' },
+          { title: 'A low thing', severity: 'low', ruleId: 'low-thing', pageUrl: 'https://example.com/x' },
+        ],
+      })));
+      const htmlPath = path.join(dir, 'report.html');
+      const router = fileURLToPath(new URL('../src/cli/qualitypilot.js', import.meta.url));
+      const res = spawnSync(process.execPath, [router, 'report', runFile, '--html', htmlPath, '--fail-on', 'medium'], { encoding: 'utf8', timeout: 30000 });
+      assert.equal(res.status, 0, `report exited ${res.status}: ${res.stderr || res.stdout}`);
+      const html = await import('node:fs/promises').then(fs => fs.readFile(htmlPath, 'utf8'));
+      assert.match(html, /QualityPilot report/);
+      assert.match(html, /Missing CSP/);
+      assert.doesNotMatch(html, /<script/i, 'standalone: no scripts');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('exits 64 with usage when given an unknown flag', () => {
+    const router = fileURLToPath(new URL('../src/cli/qualitypilot.js', import.meta.url));
+    const res = spawnSync(process.execPath, [router, 'report', 'x.json', '--bogus'], { encoding: 'utf8', timeout: 30000 });
+    assert.equal(res.status, 64);
+    assert.match(`${res.stderr || ''}${res.stdout || ''}`, /Unknown argument/);
+  });
+});
+
 // ─── direct CLI entry (smoke-run regression, 2026-11-14) ─────────────
 
 describe('check CLI entry point', () => {

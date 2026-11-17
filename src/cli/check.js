@@ -43,6 +43,7 @@ import { toJUnitXml } from '../reporting/junit.js';
 import { toSarif } from '../reporting/sarif.js';
 import { toMarkdown } from '../reporting/markdown.js';
 import { diffRuns } from '../services/runDiff.js';
+import { parseWaiverFile, applyWaivers } from '../services/waivers.js';
 import { extractJsonDocument, decodeCapturedOutput } from '../utils/jsonDocument.js';
 
 const EXIT_OK = 0;
@@ -101,6 +102,7 @@ export function parseArgs(argv) {
     authorizedTarget: false,
     openapi: null,
     loginRecording: null,
+    ignoreFile: null,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -152,6 +154,9 @@ export function parseArgs(argv) {
     } else if (arg === '--openapi') {
       opts.openapi = args[++i];
       if (!opts.openapi) throw new Error('--openapi requires a spec file path');
+    } else if (arg === '--ignore-file') {
+      opts.ignoreFile = args[++i];
+      if (!opts.ignoreFile) throw new Error('--ignore-file requires a waiver file path');
     } else if (arg === '--login') {
       opts.loginRecording = args[++i];
       if (!opts.loginRecording) throw new Error('--login requires a recorded session name');
@@ -422,7 +427,7 @@ export async function checkMain(argv = process.argv) {
     return EXIT_URL_MISSING;
   }
   try {
-    const { url, failOn, timeout, maxPages, maxDepth, minScore, junitPath, sarifPath, format, json, strict, baseline, concurrency, authorizedTarget, openapi, loginRecording } = parsedArgs;
+    const { url, failOn, timeout, maxPages, maxDepth, minScore, junitPath, sarifPath, format, json, strict, baseline, concurrency, authorizedTarget, openapi, loginRecording, ignoreFile } = parsedArgs;
 
     // Phase 9: parse the OpenAPI spec at CLI time — unreadable specs are
     // usage errors (exit 64), not silent run failures.
@@ -462,6 +467,26 @@ export async function checkMain(argv = process.argv) {
       validateReport(run, { throwOnError: true });
     }
     const findings = run.findings || [];
+
+    // Waivers (Phase 10): suppressed findings stay in the report (annotated)
+    // but do not fail the gate. Expired waivers warn loudly and surface the
+    // finding again.
+    let waiverResult = null;
+    let effectiveFindings = findings;
+    if (ignoreFile) {
+      try {
+        const waiverText = decodeCapturedOutput(await readFile(ignoreFile));
+        const { waivers } = parseWaiverFile(waiverText);
+        waiverResult = applyWaivers(findings, waivers);
+        effectiveFindings = waiverResult.kept;
+        for (const f of waiverResult.waived) f.waived = true;
+        for (const w of waiverResult.warnings) console.error(w);
+      } catch (err) {
+        console.error(`ERROR: ${err.message}`);
+        return EXIT_URL_MISSING; // 64 — a broken waiver file is a usage error
+      }
+    }
+
     const compliance = await (async () => {
       try {
         const { computeCompliance } = await import('../services/compliance.js');
@@ -481,12 +506,12 @@ export async function checkMain(argv = process.argv) {
         console.error(`ERROR: ${err.message}`);
         return EXIT_URL_MISSING; // 64 — a bad baseline is a usage error, never a silent pass
       }
-      diff = diffRuns(baselineRun, run);
+      diff = diffRuns(baselineRun, { ...run, findings: effectiveFindings });
       diff.baselineRunId = baselineRun.runId || String(baseline);
     }
 
     // CI gate: evaluate BEFORE output so json/markdown carry the verdict.
-    const gate = evaluateBaselineGate({ findings, score: run.score, failOn, minScore, diff });
+    const gate = evaluateBaselineGate({ findings: effectiveFindings, score: run.score, failOn, minScore, diff });
 
     // Write requested report artifacts (JUnit XML / SARIF JSON).
     await writeReportFiles(run, { junitPath, sarifPath });
@@ -508,6 +533,7 @@ export async function checkMain(argv = process.argv) {
             persistentCount: diff.persistentFindings.length,
           },
         } : {}),
+        ...(waiverResult ? { waivedCount: waiverResult.waived.length } : {}),
         compliance,
         threshold: failOn,
         minScore,

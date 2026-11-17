@@ -30,6 +30,9 @@ if (command === 'check') {
 } else if (command === 'replay') {
   const { replayMain } = await import('./replay.js');
   process.exitCode = await replayMain(['qualitypilot', 'replay', ...args.slice(1)]);
+} else if (command === 'report') {
+  const { reportMain } = await import('./report.js');
+  process.exitCode = await reportMain(['qualitypilot', 'report', ...args.slice(1)]);
 } else {
   console.error('Usage: qualitypilot <command> [options]');
   console.error('');
@@ -40,6 +43,8 @@ if (command === 'check') {
   console.error('                             [--storage-state <role>=<path>]');
   console.error('  replay <plan.json>         replay an exported plan against a target (--url)');
   console.error('                             with the full matrix + classifiers, no LLM needed');
+  console.error('  report <run.json>          turn a saved run into a shareable HTML/markdown report');
+  console.error('                             [--html <out.html>] [--markdown <out.md>] [--ignore-file <f>]');
   console.error('');
   console.error('Check options:');
   console.error('  --fail-on <sev|list>   single severity = threshold ("at or above");');

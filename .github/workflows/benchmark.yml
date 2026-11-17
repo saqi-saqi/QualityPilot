@@ -1,0 +1,74 @@
+# Benchmark (recall regression gate) — Phase 11.
+#
+# Nightly + on-demand: boots the pinned OWASP Juice Shop version, runs the
+# recall harness (benchmark/run-recall-benchmark.mjs) against the DEFAULT
+# `qualitypilot check` surface, and FAILS the job when deterministic recall
+# drops below 100% or a must-not-find (false-positive guard) fires.
+#
+# The badge in README.md tracks this workflow. Receipts (recall .json/.md)
+# are uploaded as artifacts on every run.
+name: Benchmark (recall regression gate)
+
+on:
+  schedule:
+    - cron: '17 3 * * *' # daily, off the top of the hour
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  recall:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies + Chromium
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+
+      - name: Boot OWASP Juice Shop (pinned v20.4.0, ctf.key mounted)
+        run: |
+          docker run -d --name juice-shop -p 3000:3000 \
+            -v "$GITHUB_WORKSPACE/benchmark/ctf.key:/juice-shop/ctf.key" \
+            bkimminich/juice-shop:v20.4.0
+
+      - name: Wait for Juice Shop
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000/ > /dev/null; then
+              echo "Juice Shop is up (attempt $i)"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs juice-shop || true
+          echo "Juice Shop did not come up within 60s"
+          exit 1
+
+      - name: Recall benchmark (fails on any regression)
+        env:
+          SQA_ALLOW_PRIVATE: 'true'
+          ALLOW_PRIVATE_HOSTS: 'true'
+        run: |
+          node benchmark/run-recall-benchmark.mjs \
+            --base-url http://localhost:3000 \
+            --max-pages 12 --max-depth 2 \
+            --timeout 2400000 \
+            --min-recall 1.0
+
+      - name: Upload benchmark receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recall-receipt
+          path: |
+            benchmark/results/*-recall.json
+            benchmark/results/*-recall.md
+          retention-days: 30

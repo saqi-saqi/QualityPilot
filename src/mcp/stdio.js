@@ -14,10 +14,19 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { TOOL_DEFS } from './tools.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+// Single source of truth for the advertised version: package.json. Hardcoded
+// literals went stale at every release (v0.3.0 → v0.4.0 shipped while the MCP
+// server still advertised 0.3.0).
+const PKG_VERSION = JSON.parse(
+  readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+).version;
 
 const server = new McpServer({
   name: 'qualitypilot',
-  version: '0.3.0',
+  version: PKG_VERSION,
 });
 
 for (const tool of TOOL_DEFS) {

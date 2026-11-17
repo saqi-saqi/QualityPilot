@@ -1,5 +1,7 @@
 # QualityPilot
 
+[![Benchmark (recall regression gate)](https://github.com/saqi-saqi/QualityPilot/actions/workflows/benchmark.yml/badge.svg)](https://github.com/saqi-saqi/QualityPilot/actions/workflows/benchmark.yml)
+
 > Autonomous software QA agent for web applications and APIs — crawls, infers test plans (with human approval), executes matrix test suites across browsers, viewports, and authenticated roles, files deduplicated regressions to your issue tracker, and gates your CI pipeline.
 
 QualityPilot is a zero-cost, self-hostable QA testing platform built on Node.js and Playwright. Give it any target web URL and QualityPilot will autonomously crawl pages, inspect network waterfalls with automatic privacy redaction, generate test suites via an AI planner (or deterministic heuristics), and run combinatorial tests across browsers, responsive viewports, and authenticated sessions. All runs, monitors, job queues, flaky history, visual baselines, and finding triage state are persisted locally in SQLite with zero cloud dependencies.
@@ -238,8 +240,12 @@ flowchart TD
 - **`src/services/sessionStore.js`**: Encrypted "record-once login" store using AES-256-GCM with a per-install random salt. Supports multiple named roles per monitor (e.g. `admin`, `customer`) without saving user credentials in plain text.
 - **`src/services/compliance.js`**: Maps axe-core accessibility audit rules to WCAG 2.x A/AA criteria over the **full WCAG-tagged axe rule universe**, marks partial coverage honestly, and exports VPAT-style evidence reports.
 - **`src/services/runDiff.js`**: Run-to-run comparison — new / resolved / persistent findings and score delta.
-- **`src/reporting/`**: JUnit XML and SARIF 2.1.0 serializers for CI pipelines.
-- **`src/cli/check.js`**: CI quality gate — exit codes driven by severity thresholds and minimum score, plus `--junit`/`--sarif` report export.
+- **`src/reporting/`**: JUnit XML, SARIF 2.1.0, standalone HTML (`report --html`) and markdown serializers for CI pipelines, PR comments and tickets.
+- **`src/executors/injection.js` + `authz.js`**: differential SQL-injection detection (status/length/error-signature signals vs a healthy baseline), login-form auth-bypass probing, DOM-XSS sink detection, and anonymous-reachability checks for admin-namespaced APIs.
+- **`src/services/waivers.js`**: findings waivers with expiry and mandatory written reasons — waived findings stay visible but stop failing the gate; expired waivers warn loudly and surface the finding again.
+- **`src/services/openapiImport.js`**: deterministic OpenAPI/Swagger import (`--openapi`) — the spec's paths become the API surface, no inference involved.
+- **`src/cli/check.js`**: CI quality gate — exit codes driven by severity thresholds and minimum score, regression-only gating via `--baseline`, waivers via `--ignore-file`, parallel matrix cells via `--concurrency`, plus `--junit`/`--sarif`/`--format markdown` export.
+- **`benchmark/`**: the recall harness and ground truth that back every number this README states.
 
 ---
 
@@ -288,7 +294,7 @@ qualitypilot check https://staging.example.com --baseline baseline.json --fail-o
 - `--fail-on` then applies to **new** findings only; `--min-score` stays an absolute check on the current run's score.
 - The JSON output gains a `baseline` block (`newFindings`, `resolvedFindings`, `persistentCount`, `scoreDelta`).
 
-### Access control + spec-driven scanning (Phase 9)
+### Access control + spec-driven scanning
 
 - **`authz` executor** — captured GET endpoints under an `/admin` namespace are re-requested anonymously; a 2xx answer is `authz-missing` (admin APIs must require an authenticated privileged session). Response bodies are deliberately not recorded (admin payloads may contain secrets). Non-admin endpoints (e.g. a `whoami` that returns an empty user anonymously) are correctly ignored.
 - **`--openapi <spec.yml|json>`** — replaces the inferred API surface with the spec's, deterministically: every path × method becomes an endpoint, query params and JSON bodies are materialized from the schema (examples > defaults > type dummies), and a relative `servers[0].url` resolves same-origin onto the target. Unreadable specs are usage errors (exit 64).
@@ -297,7 +303,7 @@ qualitypilot check https://staging.example.com --baseline baseline.json --fail-o
 ```bash
 qualitypilot check http://localhost:3000 --openapi swagger.yml --login juice-shop-cli
 ```
-### Injection probing (Phase 8)
+### Injection probing
 
 A dedicated `injection` executor runs three bounded, non-destructive probes and classifies results by **response differentials** (status class, length, and SQL error-signature matching), not by payload presence:
 
@@ -329,16 +335,63 @@ Form fuzzing loads each page **once per target** (safe mode never submits, so th
 qualitypilot check https://staging.example.com --baseline baseline.json --format markdown >> "$GITHUB_STEP_SUMMARY"
 ```
 
+## 📄 Shareable Reports & Waivers
+
+Turn a saved run into a self-contained HTML report (inline CSS, no scripts, no external assets — paste it into a ticket or attach it to a release):
+
+```bash
+qualitypilot report baseline.json --html report.html
+```
+
+Waivers let teams accept known findings without losing them: waived findings stay visible (annotated) but stop failing the gate. A waiver without a written reason is rejected; expired waivers warn loudly and surface the finding again:
+
+```json
+{ "waivers": [ { "ruleId": "header-strict-transport-security", "pageUrl": "http://localhost:3000",
+    "reason": "localhost-only target, no TLS termination", "expiresAt": "2027-06-30" } ] }
+```
+
+```bash
+qualitypilot check https://staging.example.com --baseline baseline.json --ignore-file .qualitypilotignore.json
+```
+
+### GitHub Actions: PR comment + SARIF upload
+
+The `report` markdown output doubles as a PR comment, and the SARIF file plugs into code scanning:
+
+```yaml
+      - name: QualityPilot gate
+        uses: saqi-saqi/QualityPilot@v0.3.0
+        with:
+          plan: qualitypilot/plan.json
+          url: ${{ vars.PREVIEW_URL }}
+          fail_on: critical,high
+
+      - name: PR comment from the gate summary
+        if: always()
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          path: qualitypilot-summary.md
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: qualitypilot.sarif
+```
+
+---
 ## 🎯 Benchmarked Recall & False-Positive Triage
 
 We hold the scanner to the same bar it holds your app. Two proof artifacts ship in the repo and run on demand:
 
-- **Juice Shop recall harness** (`benchmark/run-recall-benchmark.mjs` + `benchmark/groundtruth-juiceshop.json`): runs the default full-surface `qualitypilot check` pipeline against a local OWASP Juice Shop v20.4.0 and scores it against a deterministic ground truth. Every expectation is **re-verified against the live target before scoring** (target drift cannot fake a number), and known false-positive modes are asserted as must-not-find rules. Recorded Phase F run: **6/6 expectations detected (100% recall), 0 false-positive-guard violations, 16 distinct rules over 9 pages in 644s**. The detailed run receipt is retained locally in the ignored `benchmark/results/` directory.
+- **Juice Shop recall harness** (`benchmark/run-recall-benchmark.mjs` + `benchmark/groundtruth-juiceshop.json`): runs the default full-surface `qualitypilot check` pipeline against a local OWASP Juice Shop v20.4.0 and scores it against a deterministic ground truth spanning five vulnerability classes (security headers, transport, SQL injection, DOM XSS, broken access control). Every expectation is **re-verified against the live target before scoring** (target drift cannot fake a number), and known false-positive modes are asserted as must-not-find rules. Current recorded receipt: **10/10 expectations detected (100% recall), 0 false-positive-guard violations, 301s** (2026-11-17). Receipts are retained locally in the ignored `benchmark/results/` directory, and the nightly benchmark job re-verifies all of it.
 - **RealWorld/Conduit false-positive triage**: the same pipeline against the official RealWorld Conduit demo, with every finding classified true/false positive against the [documented Conduit API spec](https://github.com/gothinkster/realworld/blob/main/specs/api/openapi.yml) (401/404/409/422 are spec-defined responses, not defects). The detailed classification receipt is retained locally in the ignored `benchmark/results/` directory.
 
 Methodology notes: only deterministic expectations score recall — crawl-state-dependent detectors (axe, console, links) are reported as observational context; the benchmark measures exactly what a user gets from the default executor list, no special benchmark mode.
 
 A product landing page ships in [`landing/`](landing/index.html) — a single static file, deployable anywhere.
+
+**Latest receipt:** 10/10 expectations detected on 2026-11-17 (local run `run_matrix_1794919896148_13c17c25`, 0 false-positive-guard violations, 301s). The nightly benchmark job re-verifies this on every run — a recall regression fails the build, and the badge above turns red. Run your own numbers: `node benchmark/run-recall-benchmark.mjs --base-url <juice-shop-url> --min-recall 1.0`.
 
 ---
 ## GitHub Action
@@ -453,9 +506,10 @@ QualityPilot is developed as an open-core architecture. Everything needed to tes
 QualityPilot has a comprehensive unit and integration test suite:
 
 ```bash
-npm test
+npm test                            # full suite (1,000+ tests)
+node scripts/run-tests.mjs cli      # subset: pass a path fragment (e.g. cli, fuzz, matrix)
 ```
-All **~950 tests** run via Node.js native test runner in ~25 seconds with zero external dependencies (the runner works on every supported Node version, 20+).
+All **1,000+ tests** (230 suites) run via Node.js native test runner in ~2 minutes, with zero test-framework dependencies — the runner ships with every supported Node version (20+). The suite covers the CLI gate and exit codes, the execution matrix and classifier, every executor (including the injection differential engine), report invariants, SSRF validation, and the recall-harness scoring logic.
 
 ---
 

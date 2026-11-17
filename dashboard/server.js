@@ -41,8 +41,13 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import helmet from 'helmet';
 import { config } from '../src/utils/config.js';
+
+// Single source of truth for the tool version (package.json) — hardcoded
+// literals went stale at every release.
+const { version: PKG_VERSION } = createRequire(import.meta.url)('../package.json');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -1041,7 +1046,7 @@ async function handleFindingEvidence(res, runId, findingId, shareable) {
       finding,
       evidenceDir: rm.evidenceDirFor(runId),
       shareable: shareable === true,
-      toolVersion: '0.3.0',
+      toolVersion: PKG_VERSION,
     });
   } catch (err) {
     sendError(res, 500, `Evidence bundle failed: ${err.message}`);
