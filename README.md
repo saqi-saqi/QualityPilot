@@ -370,7 +370,7 @@ The `report` markdown output doubles as a PR comment, and the SARIF file plugs i
 
 ```yaml
       - name: QualityPilot gate
-        uses: saqi-saqi/QualityPilot@v0.3.0
+        uses: saqi-saqi/QualityPilot@v0.4.0
         with:
           plan: qualitypilot/plan.json
           url: ${{ vars.PREVIEW_URL }}
@@ -406,8 +406,8 @@ The same advice applies to the `saqi-saqi/QualityPilot@v…` reference in your o
 
 We hold the scanner to the same bar it holds your app. Two proof artifacts ship in the repo and run on demand:
 
-- **Juice Shop recall harness** (`benchmark/run-recall-benchmark.mjs` + `benchmark/groundtruth-juiceshop.json`): runs the default full-surface `qualitypilot check` pipeline against a local OWASP Juice Shop v20.4.0 and scores it against a deterministic ground truth spanning five vulnerability classes (security headers, transport, SQL injection, DOM XSS, broken access control). Every expectation is **re-verified against the live target before scoring** (target drift cannot fake a number), and known false-positive modes are asserted as must-not-find rules. Current recorded receipt: **10/10 expectations detected (100% recall), 0 false-positive-guard violations, 301s** (2026-11-17). Receipts are retained locally in the ignored `benchmark/results/` directory, and the nightly benchmark job re-verifies all of it.
-- **RealWorld/Conduit false-positive triage**: the same pipeline against the official RealWorld Conduit demo, with every finding classified true/false positive against the [documented Conduit API spec](https://github.com/gothinkster/realworld/blob/main/specs/api/openapi.yml) (401/404/409/422 are spec-defined responses, not defects). The detailed classification receipt is retained locally in the ignored `benchmark/results/` directory.
+- **Juice Shop recall harness** (`benchmark/run-recall-benchmark.mjs` + `benchmark/groundtruth-juiceshop.json`): runs the default full-surface `qualitypilot check` pipeline against a local OWASP Juice Shop v20.4.0 and scores it against a deterministic ground truth spanning five vulnerability classes (security headers, transport, SQL injection, DOM XSS, broken access control). Every expectation is **re-verified against the live target before scoring** (target drift cannot fake a number), and known false-positive modes are asserted as must-not-find rules. Current recorded receipt: **10/10 expectations detected (100% recall), 0 false-positive-guard violations, 301s** (2026-11-17). Curated receipts are committed under [`benchmark/receipts/`](benchmark/receipts/) (scratch output stays in the ignored `benchmark/results/`), and the nightly benchmark job re-verifies all of it.
+- **RealWorld/Conduit false-positive triage**: the same pipeline against the official RealWorld Conduit demo, with every finding classified true/false positive against the [documented Conduit API spec](https://github.com/gothinkster/realworld/blob/main/specs/api/openapi.yml) (401/404/409/422 are spec-defined responses, not defects). The classification receipt is published under [`benchmark/receipts/`](benchmark/receipts/).
 
 Methodology notes: only deterministic expectations score recall — crawl-state-dependent detectors (axe, console, links) are reported as observational context; the benchmark measures exactly what a user gets from the default executor list, no special benchmark mode.
 
@@ -433,7 +433,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Replay QualityPilot plan
-        uses: saqi-saqi/QualityPilot@v0.3.0
+        uses: saqi-saqi/QualityPilot@v0.4.0
         with:
           plan: qualitypilot/plan.json
           url: ${{ secrets.PREVIEW_URL }}
@@ -447,7 +447,7 @@ The action runs the exported plan without an LLM key, writes a summary to the Gi
 qualitypilot export plan.json --format plan --out qualitypilot
 ```
 
-Use a release tag such as `v0.3.0` in production workflows so upgrades are deliberate.
+Use a release tag such as `v0.4.0` in production workflows so upgrades are deliberate.
 
 ---
 ## 📦 Export Your Tests
