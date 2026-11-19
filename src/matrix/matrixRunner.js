@@ -235,11 +235,25 @@ export function getNodeSignature(finding) {
 }
 
 /**
+ * Scan contexts (matrix roles) a finding was observed in. The merged `roles`
+ * array is what makes role-scoped waivers safe: a waiver scoped to the admin
+ * role must never hide a defect the anon cell also saw.
+ */
+function roleKeysOf(finding) {
+  const out = [];
+  if (Array.isArray(finding.roles)) out.push(...finding.roles.map(String));
+  const single = finding.matrixCell?.role ?? finding.role;
+  if (single) out.push(String(single));
+  return out;
+}
+
+/**
  * Dedup findings across cells. Same ruleId + affected node signature + pageUrl → merge into one finding.
  * - occurrences: sum across cells
  * - affectedPages: union
  * - severity: worst
  * - matrixCells: list of cell IDs where observed
+ * - roles: union of scan contexts (matrix roles) the finding was seen in
  */
 export function dedupFindings(findings) {
   const merged = new Map();
@@ -260,6 +274,7 @@ export function dedupFindings(findings) {
         occurrences: finding.occurrences || 1,
         affectedPages: new Set([...(finding.affectedPages || []), ...(rawUrl ? [rawUrl] : [])]),
         matrixCells: new Set(finding.matrixCell?.cellId ? [finding.matrixCell.cellId] : []),
+        roles: new Set(roleKeysOf(finding)),
       });
     } else {
       const existing = merged.get(key);
@@ -267,6 +282,7 @@ export function dedupFindings(findings) {
       for (const p of (finding.affectedPages || [])) existing.affectedPages.add(p);
       if (rawUrl) existing.affectedPages.add(rawUrl);
       if (finding.matrixCell?.cellId) existing.matrixCells.add(finding.matrixCell.cellId);
+      for (const r of roleKeysOf(finding)) existing.roles.add(r);
       existing.severity = worstSeverity(existing.severity, finding.severity);
       // Don't lose non-empty evidence/description/selector
       if (!existing.description && finding.description) existing.description = finding.description;
@@ -280,6 +296,7 @@ export function dedupFindings(findings) {
     ...f,
     affectedPages: Array.from(f.affectedPages),
     matrixCells: Array.from(f.matrixCells),
+    ...(f.roles.size > 0 ? { roles: Array.from(f.roles).sort() } : {}),
   }));
 }
 

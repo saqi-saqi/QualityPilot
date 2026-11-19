@@ -4,6 +4,7 @@
  * Usage:
  *   qualitypilot replay <plan.json> [--url <target>] [--fail-on <sev|list>]
  *                       [--min-score <n>] [--timeout <ms>] [--max-pages <n>]
+ *                       [--ignore-file <waivers.json>]
  *
  * Loads an exported plan JSON (qualitypilot/plan artifact — see
  * `qualitypilot export`), saves it as an approved draft, and executes it
@@ -27,6 +28,7 @@ import { clearExecutors } from '../services/executorRegistry.js';
 import { createFindingFactory } from '../services/findingFactory.js';
 import { calculateScore, summarizeFindings } from '../services/scoring.js';
 import { evaluateGate } from './check.js';
+import { parseWaiverFile, applyWaivers } from '../services/waivers.js';
 
 const EXIT_OK = 0;
 const EXIT_USAGE = 64;
@@ -42,6 +44,7 @@ function parseReplayArgs(argv) {
     minScore: null,
     timeout: 600000,
     maxPages: null,
+    ignoreFile: null,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -59,6 +62,9 @@ function parseReplayArgs(argv) {
       opts.timeout = Number(args[++i]) || 600000;
     } else if (a === '--max-pages') {
       opts.maxPages = Number(args[++i]) || undefined;
+    } else if (a === '--ignore-file') {
+      opts.ignoreFile = args[++i];
+      if (!opts.ignoreFile) throw new Error('--ignore-file requires a waiver file path');
     } else if (a.startsWith('--')) {
       throw new Error(`Unknown option: ${a}`);
     } else {
@@ -67,7 +73,7 @@ function parseReplayArgs(argv) {
   }
 
   if (positional.length !== 1) {
-    throw new Error('Usage: qualitypilot replay <plan.json> [--url <target>] [--fail-on <sev|list>] [--min-score <n>] [--timeout <ms>] [--max-pages <n>]');
+    throw new Error('Usage: qualitypilot replay <plan.json> [--url <target>] [--fail-on <sev|list>] [--min-score <n>] [--timeout <ms>] [--max-pages <n>] [--ignore-file <file>]');
   }
   opts.planFile = positional[0];
   return opts;
@@ -201,13 +207,31 @@ export async function replayMain(argv = process.argv) {
       });
 
       const findings = result.findings || [];
+
+      // Waivers — parity with `check --ignore-file`. Without this the GitHub
+      // Action gate (which runs replay) could never honour the team's
+      // waiver file, so local CI and the PR gate disagreed (audit M-5).
+      let waiverResult = null;
+      let gateFindings = findings;
+      if (opts.ignoreFile) {
+        const { waivers } = parseWaiverFile(await readFile(opts.ignoreFile, 'utf8'));
+        waiverResult = applyWaivers(findings, waivers);
+        gateFindings = waiverResult.kept;
+        for (const f of waiverResult.waived) f.waived = true;
+        for (const w of waiverResult.warnings) console.error(w);
+      }
+
       const score = calculateScore(findings);
       const summary = summarizeFindings(findings, result.stats?.totalCells ?? 0);
-      const gate = evaluateGate({ findings, score, failOn: opts.failOn, minScore: opts.minScore });
+      const gate = evaluateGate({ findings: gateFindings, score, failOn: opts.failOn, minScore: opts.minScore });
 
       console.log('');
-      console.log(`Score: ${typeof score === 'number' ? score : '—'}/100 | Findings: ${findings.length}`);
-      console.log(`Gate: ${gate.reason}`);
+      const shownScore = typeof score === 'number' ? Math.round(score * 10) / 10 : '—';
+      console.log(`Score: ${shownScore}/100 | Findings: ${findings.length}`);
+      const waiverNote = waiverResult && waiverResult.waived.length > 0
+        ? ` · waivers: ${waiverResult.waived.length} suppressed (--min-score still uses the unwaived run score)`
+        : '';
+      console.log(`Gate: ${gate.reason}${waiverNote}`);
       if (process.env.GITHUB_STEP_SUMMARY) {
         const { appendFile } = await import('node:fs/promises');
         await appendFile(process.env.GITHUB_STEP_SUMMARY, markdownSummary(plan, { findings, score }, gate), 'utf8');

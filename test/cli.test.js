@@ -496,3 +496,28 @@ describe('evaluateBaselineGate', () => {
     assert.equal(withNull.reason, base.reason);
   });
 });
+
+describe('check parseArgs — positional URL handling (audit H-3 regressions)', () => {
+  it('accepts flags BEFORE the URL (used to take the flag value as the URL)', () => {
+    const opts = parseArgs(['node', 'check', '--fail-on', 'high', 'https://x.com']);
+    assert.equal(opts.url, 'https://x.com');
+    assert.equal(opts.failOn, 'high');
+  });
+
+  it('rejects unknown flags instead of silently ignoring them', () => {
+    assert.throws(() => parseArgs(['node', 'check', 'https://x.com', '--failon', 'high']), /Unknown option: --failon/);
+  });
+
+  it('rejects extra positional arguments', () => {
+    assert.throws(() => parseArgs(['node', 'check', 'https://x.com', 'extra']), /Unexpected argument: extra/);
+  });
+
+  it('rejects non-positive --timeout values', () => {
+    assert.throws(() => parseArgs(['node', 'check', 'https://x.com', '--timeout', '0']), /Invalid --timeout/);
+  });
+
+  it('parses --allow-private (default off)', () => {
+    assert.equal(parseArgs(['node', 'check', 'https://x.com', '--allow-private']).allowPrivate, true);
+    assert.equal(parseArgs(['node', 'check', 'https://x.com']).allowPrivate, false);
+  });
+});

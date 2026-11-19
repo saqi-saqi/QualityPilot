@@ -17,6 +17,7 @@ ARGS=(replay "$INPUT_PLAN" --url "$INPUT_URL" --timeout "${INPUT_TIMEOUT:-600000
 [ -n "${INPUT_FAIL_ON:-}" ] && ARGS+=(--fail-on "$INPUT_FAIL_ON")
 [ -n "${INPUT_MIN_SCORE:-}" ] && ARGS+=(--min-score "$INPUT_MIN_SCORE")
 [ -n "${INPUT_MAX_PAGES:-}" ] && ARGS+=(--max-pages "$INPUT_MAX_PAGES")
+[ -n "${INPUT_IGNORE_FILE:-}" ] && ARGS+=(--ignore-file "$INPUT_IGNORE_FILE")
 
 # GITHUB_STEP_SUMMARY is honored inside the replay CLI (markdown job summary).
 node src/cli/qualitypilot.js "${ARGS[@]}"

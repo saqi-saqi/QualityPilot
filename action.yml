@@ -20,6 +20,9 @@ inputs:
   max_pages:
     description: 'Crawl page cap for the replay'
     default: ''
+  ignore_file:
+    description: 'Path to a waivers file (.qualitypilotignore.json shape) — suppressed findings stay visible but do not fail the gate'
+    default: ''
   timeout:
     description: 'Replay timeout in milliseconds'
     default: '600000'

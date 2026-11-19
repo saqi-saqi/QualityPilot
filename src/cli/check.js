@@ -30,7 +30,7 @@
  * 70 scan failure.
  *
  * Environment:
- *   SQA_ALLOW_PRIVATE — allow localhost/private URLs (default: off)
+ *   SQA_ALLOW_PRIVATE — allow localhost/private URLs (default: off; or pass --allow-private)
  *   SQA_MAX_PAGES     — max pages to crawl (default: 10 for CI)
  *   SQA_MAX_DEPTH     — max crawl depth (default: 1 for CI)
  *   SQA_CI_TIMEOUT    — run timeout in ms (default: 120000)
@@ -58,6 +58,20 @@ const FAIL_ON_SINGLE_VALUES = ['info', 'low', 'medium', 'high', 'critical', 'non
 const OUTPUT_FORMATS = ['text', 'json', 'junit', 'sarif', 'markdown'];
 
 /**
+ * Flags understood by `check`. Anything else is a usage error — a typo like
+ * `--failon` used to be silently ignored, which ran the gate with defaults
+ * and could turn a failing build green.
+ */
+const KNOWN_FLAGS = new Set([
+  '--fail-on', '-f', '--timeout', '-t', '--max-pages', '-p', '--max-depth', '-d',
+  '--min-score', '--junit', '--sarif', '--format', '--json', '--strict',
+  '--baseline', '--concurrency', '--authorized-target', '--openapi',
+  '--ignore-file', '--login', '--allow-private',
+]);
+
+const CHECK_USAGE = 'Usage: qualitypilot check <url> [--fail-on critical|high|medium|low|info|none] [--min-score <n>] [--junit <file>] [--sarif <file>] [--baseline <file|runId>] [--ignore-file <file>] [--concurrency <1-4>] [--allow-private] [--format json|junit|sarif|markdown]';
+
+/**
  * Parse a --fail-on value: a single severity/none (threshold mode) or a
  * comma-separated list of severities (list mode → confirmed findings only).
  */
@@ -81,10 +95,15 @@ function parseFailOn(raw) {
   return { mode: 'threshold', value };
 }
 
-/** Parse command-line arguments. */
+/** Parse command-line arguments. The target URL is the single positional.
+ *
+ * Flag VALUES do not start with `--`, so the URL cannot be found by scanning
+ * for the first non-flag token: `check --fail-on high <url>` used to take
+ * "high" as the URL. Positional arguments are collected while every flag
+ * consumes its own value, and flags may legally precede the URL.
+ */
 export function parseArgs(argv) {
   const args = argv.slice(2);
-  const url = args.find((a) => !a.startsWith('--'));
   const opts = {
     failOn: 'none',
     failOnParsed: parseFailOn('none'),
@@ -103,23 +122,49 @@ export function parseArgs(argv) {
     openapi: null,
     loginRecording: null,
     ignoreFile: null,
+    allowPrivate: false,
   };
+  const positionals = [];
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
+    const isFlag = arg.startsWith('-') && arg.length > 1;
+    if (!isFlag) {
+      positionals.push(arg);
+      continue;
+    }
+    if (!KNOWN_FLAGS.has(arg)) {
+      throw new Error(`Unknown option: ${arg} — run "qualitypilot check" with no arguments for usage`);
+    }
     if (arg === '--fail-on' || arg === '-f') {
       opts.failOn = args[++i] || 'none';
       opts.failOnParsed = parseFailOn(opts.failOn);
     } else if (arg === '--timeout' || arg === '-t') {
-      opts.timeout = Number(args[++i]) || 120000;
+      const raw = args[++i];
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n <= 0) {
+        throw new Error(`Invalid --timeout value: ${raw}. Must be a positive number of milliseconds`);
+      }
+      opts.timeout = n;
     } else if (arg === '--max-pages' || arg === '-p') {
-      opts.maxPages = Number(args[++i]) || 10;
+      const raw = args[++i];
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 1) {
+        throw new Error(`Invalid --max-pages value: ${raw}. Must be a number >= 1`);
+      }
+      opts.maxPages = n;
     } else if (arg === '--max-depth' || arg === '-d') {
-      opts.maxDepth = Number(args[++i]) || 1;
+      const raw = args[++i];
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) {
+        throw new Error(`Invalid --max-depth value: ${raw}. Must be a number >= 0`);
+      }
+      opts.maxDepth = n;
     } else if (arg === '--min-score') {
-      const n = Number(args[++i]);
+      const raw = args[++i];
+      const n = Number(raw);
       if (!Number.isFinite(n) || n < 0 || n > 100) {
-        throw new Error(`Invalid --min-score value: ${args[i]}. Must be a number between 0 and 100`);
+        throw new Error(`Invalid --min-score value: ${raw}. Must be a number between 0 and 100`);
       }
       opts.minScore = n;
     } else if (arg === '--junit') {
@@ -160,23 +205,39 @@ export function parseArgs(argv) {
     } else if (arg === '--login') {
       opts.loginRecording = args[++i];
       if (!opts.loginRecording) throw new Error('--login requires a recorded session name');
+    } else if (arg === '--allow-private') {
+      // Explicit opt-in to the developer-only private-target switch — the
+      // same effect as SQA_ALLOW_PRIVATE=true, without editing the env.
+      // Without it (and without the env var) the SSRF boundary stays on.
+      opts.allowPrivate = true;
     } else if (arg === '--strict') {
       opts.strict = true;
     }
   }
 
-  if (!url) {
-    throw new Error('Usage: qualitypilot check <url> [--fail-on critical|high|medium|low|info|none] [--min-score <n>] [--junit <file>] [--sarif <file>] [--baseline <file|runId>] [--concurrency <1-4>] [--format json|junit|sarif|markdown]');
+  if (positionals.length === 0) {
+    throw new Error(CHECK_USAGE);
+  }
+  if (positionals.length > 1) {
+    throw new Error(`Unexpected argument: ${positionals[1]} — the target URL must be given exactly once (flags may precede it)`);
   }
 
-  return { url, ...opts };
+  return { url: positionals[0], ...opts };
+}
+
+/** One-decimal normalization for scores as they cross a serialization boundary.
+ *  The scorer keeps full precision (tests pin exact scaling); this only stops
+ *  float noise like 5.800000000000011 from reaching machine output. */
+function roundScore(score) {
+  const n = Number(score);
+  return Number.isFinite(n) ? Math.round(n * 10) / 10 : score;
 }
 
 /** Print a compact scan summary to stdout (CI-friendly). */
 function printSummary({ url, score, findings, pages, compliance, json, diff }) {
   console.log(`QualityPilot CI check`);
   console.log(`URL: ${url}`);
-  console.log(`Pages: ${pages || 0} | Score: ${score || '?'}/100 | Findings: ${findings?.length || 0}`);
+  console.log(`Pages: ${pages || 0} | Score: ${score == null ? '?' : roundScore(score)}/100 | Findings: ${findings?.length || 0}`);
   if (diff) console.log(`Baseline ${diff.baselineRunId}: ${diff.summary}`);
 
   if (compliance) {
@@ -364,8 +425,14 @@ export async function writeReportFiles(run, { junitPath, sarifPath } = {}) {
 }
 
 /** Run a bounded scan of the URL using the matrix. */
-async function runCheck({ url, timeout, maxPages, maxDepth, concurrency, authorizedTarget, openapiSpec, loginRecording }) {
-  process.env.SQA_ALLOW_PRIVATE = process.env.SQA_ALLOW_PRIVATE || 'true';
+async function runCheck({ url, timeout, maxPages, maxDepth, concurrency, authorizedTarget, openapiSpec, loginRecording, allowPrivate }) {
+  // The SSRF boundary is ON by default, exactly as documented. The operator
+  // opts in per invocation (--allow-private) or via the environment
+  // (SQA_ALLOW_PRIVATE=true). This used to be forced on unconditionally,
+  // which silently disabled the boundary for every CLI scan (audit H-2).
+  if (allowPrivate) {
+    process.env.SQA_ALLOW_PRIVATE = process.env.SQA_ALLOW_PRIVATE || 'true';
+  }
   process.env.SQA_MAX_PAGES = process.env.SQA_MAX_PAGES || String(maxPages);
   process.env.SQA_MAX_DEPTH = process.env.SQA_MAX_DEPTH || String(maxDepth);
 
@@ -427,7 +494,7 @@ export async function checkMain(argv = process.argv) {
     return EXIT_URL_MISSING;
   }
   try {
-    const { url, failOn, timeout, maxPages, maxDepth, minScore, junitPath, sarifPath, format, json, strict, baseline, concurrency, authorizedTarget, openapi, loginRecording, ignoreFile } = parsedArgs;
+    const { url, failOn, timeout, maxPages, maxDepth, minScore, junitPath, sarifPath, format, json, strict, baseline, concurrency, authorizedTarget, openapi, loginRecording, ignoreFile, allowPrivate } = parsedArgs;
 
     // Phase 9: parse the OpenAPI spec at CLI time — unreadable specs are
     // usage errors (exit 64), not silent run failures.
@@ -450,7 +517,7 @@ export async function checkMain(argv = process.argv) {
     const progress = machineOutput ? process.stderr : process.stdout;
     progress.write(`QualityPilot CI check — ${url}\n`);
 
-    const run = await runCheck({ url, timeout, maxPages, maxDepth, concurrency, authorizedTarget, openapiSpec, loginRecording });
+    const run = await runCheck({ url, timeout, maxPages, maxDepth, concurrency, authorizedTarget, openapiSpec, loginRecording, allowPrivate });
 
     // A failed scan must never exit 0: without this check a broken scan
     // (e.g. Playwright browsers not installed, target unreachable) reported
@@ -520,7 +587,7 @@ export async function checkMain(argv = process.argv) {
       const out = {
         url,
         runId: run.runId,
-        score: run.score,
+        score: roundScore(run.score),
         status: run.status,
         findings,
         ...(diff ? {
@@ -553,7 +620,10 @@ export async function checkMain(argv = process.argv) {
       printSummary({ url, score: run.score, findings, pages: run.pages?.length, compliance, json, diff });
     }
 
-    (machineOutput ? process.stderr : process.stdout).write(`${gate.reason}\n`);
+    const waiverNote = waiverResult && waiverResult.waived.length > 0
+      ? ` · waivers: ${waiverResult.waived.length} suppressed (--min-score still uses the unwaived run score)`
+      : '';
+    (machineOutput ? process.stderr : process.stdout).write(`${gate.reason}${waiverNote}\n`);
     return gate.exitCode;
   } catch (err) {
     console.error(`ERROR: ${err.message}`);
