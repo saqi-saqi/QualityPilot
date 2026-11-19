@@ -2,7 +2,9 @@
 # Build:  docker build -t qualitypilot .
 # Run:    docker run -p 8080:8080 --env-file .env -v "$(pwd)/data:/app/data" qualitypilot
 
-FROM node:20-slim
+# node:22 matches package.json engines (">=22.19.0") — the image used to be
+# node:20-slim, a runtime the package itself declares unsupported.
+FROM node:22-slim
 
 WORKDIR /app
 
@@ -14,9 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install npm dependencies (cached layer)
+# Install npm dependencies (cached layer) — production only; @playwright/test
+# and the other dev tools do not belong in the runtime image.
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --omit=dev
 
 # Shared, non-root-readable location for the Playwright browsers — the
 # runtime user (below) must be able to launch them.

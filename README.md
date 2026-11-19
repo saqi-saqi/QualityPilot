@@ -11,7 +11,7 @@ QualityPilot is a zero-cost, self-hostable QA testing platform built on Node.js 
 ## ⚡ 2-Minute Quickstart
 
 ### Prerequisites
-- Node.js >= 20.0.0
+- Node.js >= 22.19.0 (the version `package.json` `engines` enforces)
 - npm >= 9.0.0
 
 ### 1. Install
@@ -45,7 +45,8 @@ qualitypilot check https://example.com --max-pages 3
 
 Prints a score and a findings summary, and exits 0 when the quality gate
 passes (exit 1 = gate failed, 64 = usage error, 70 = scan failure). To scan a
-local dev server, set `SQA_ALLOW_PRIVATE=true` in the environment.
+local dev server, pass `--allow-private` (or set `SQA_ALLOW_PRIVATE=true` in
+the environment) — the SSRF boundary is ON by default.
 
 ### 2. Start the Server & Dashboard
 ```bash
@@ -126,7 +127,7 @@ Running from a source checkout instead of a global install? Use
 directory to the repo root.
 
 > **Why `SQA_ALLOW_PRIVATE=true`?**
-> QualityPilot's enterprise SSRF boundary blocks private IP ranges (`127.0.0.1`, `10.0.0.0/8`, `192.168.0.0/16`, CGNAT, cloud metadata endpoints) by default. Setting `SQA_ALLOW_PRIVATE="true"` permits local loopback scanning so your agent can verify `http://localhost:3000` or local dev servers.
+> QualityPilot's enterprise SSRF boundary blocks private IP ranges (`127.0.0.1`, `10.0.0.0/8`, `192.168.0.0/16`, CGNAT, IPv4-mapped IPv6 in any spelling, cloud metadata endpoints) by default — for the MCP server, the dashboard and the `qualitypilot check` CLI alike. Setting `SQA_ALLOW_PRIVATE="true"` (or passing `--allow-private` to `check`) permits local loopback scanning so your agent can verify `http://localhost:3000` or local dev servers.
 
 > **Security Note**: The `stdio` transport runs as a local subprocess with zero network exposure. If an HTTP/SSE transport is enabled for remote access in the future, token authentication becomes mandatory.
 
@@ -354,6 +355,13 @@ Waivers let teams accept known findings without losing them: waived findings sta
 qualitypilot check https://staging.example.com --baseline baseline.json --ignore-file .qualitypilotignore.json
 ```
 
+A waiver matches on `ruleId` plus optional scope keys — `pageUrl` (origin + path; a trailing `*` is a path-prefix that never crosses the origin), `method`, `selector`, and `role`/`roles` (the scan context). Two hard rules:
+
+- **Unknown keys are rejected.** A typo like `"rolez"` used to be dropped silently, turning a scoped waiver into a global one.
+- **A role-scoped waiver only suppresses a finding observed in every role it covers.** Waiving a defect for the `admin` role never hides the same defect seen by the `anon` control scan.
+
+URL matching is normalized: scheme/host case, default ports (`:443`), trailing slashes and fragments do not affect matching; query strings are ignored unless the waiver itself specifies one. `expiresAt` is an ISO `yyyy-mm-dd` date, inclusive through the end of the stated UTC day. Waived findings do not fail `--fail-on`, but `--min-score` deliberately still uses the unwaived run score — the gate reason line says so when waivers are applied. `qualitypilot replay` (and therefore the GitHub Action's `ignore_file` input) honours the same file.
+
 ### GitHub Actions: PR comment + SARIF upload
 
 The `report` markdown output doubles as a PR comment, and the SARIF file plugs into code scanning:
@@ -497,7 +505,7 @@ QualityPilot is developed as an open-core architecture. Everything needed to tes
 | :--- | :--- |
 | `Executable doesn't exist ... npx playwright install` | Browsers download separately from the npm package: run `npx playwright install chromium` (Firefox/WebKit are only needed for multi-browser matrix scans) |
 | `better-sqlite3` build errors during install | Prebuilt binaries cover Node 20/22/24 on Windows/macOS/Linux (x64 + arm64). If your platform has no prebuild, install build tools (Windows: VS Build Tools "Desktop development with C++"; macOS: Xcode CLT; Linux: `build-essential` + `python3`) and reinstall |
-| Scanning `http://localhost:...` is blocked | Set `SQA_ALLOW_PRIVATE=true` (CLI env or the MCP server `env` block) - the SSRF guard blocks private ranges by default |
+| Scanning `http://localhost:...` is blocked | Pass `--allow-private` to `qualitypilot check`, or set `SQA_ALLOW_PRIVATE=true` (CLI env or the MCP server `env` block) - the SSRF guard blocks private ranges by default |
 | `[llmProvider] No LLM provider configured ... using MockProvider` | Informational, not an error: deterministic heuristics replace AI planning. See *Zero-config demo* above |
 | `ERROR: Usage: ...` and exit code 64 | CLI arguments were invalid - check the options list via `qualitypilot` with no arguments |
 
@@ -509,7 +517,7 @@ QualityPilot has a comprehensive unit and integration test suite:
 npm test                            # full suite (1,000+ tests)
 node scripts/run-tests.mjs cli      # subset: pass a path fragment (e.g. cli, fuzz, matrix)
 ```
-All **1,000+ tests** (230 suites) run via Node.js native test runner in ~2 minutes, with zero test-framework dependencies — the runner ships with every supported Node version (20+). The suite covers the CLI gate and exit codes, the execution matrix and classifier, every executor (including the injection differential engine), report invariants, SSRF validation, and the recall-harness scoring logic.
+All **1,000+ tests** (230 suites) run via Node.js native test runner in ~2 minutes, with zero test-framework dependencies — the runner ships with every supported Node version (22.19+). The suite covers the CLI gate and exit codes, the execution matrix and classifier, every executor (including the injection differential engine), report invariants, SSRF validation, and the recall-harness scoring logic.
 
 ---
 

@@ -24,7 +24,6 @@ Thumbs.db
 
 # Local planning, research, and scratch work
 BUILD_PLAN.md
-CHANGES.md
 HANDOFF_PHASE0.md
 ex.txt
 lit-survey-*.md
@@ -33,3 +32,5 @@ benchmark/results/
 rea_work/
 workflow-summary.html
 launch/
+AUDIT_REPORT.md
+CHANGES.md
