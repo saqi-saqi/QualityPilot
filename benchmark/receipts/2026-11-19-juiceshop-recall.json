@@ -1,0 +1,122 @@
+{
+  "benchmark": "juiceshop-recall",
+  "groundtruth": "groundtruth-juiceshop.json",
+  "run": {
+    "runId": "run_matrix_1795076779880_ba4b4d0f",
+    "status": "completed",
+    "score": 0,
+    "url": "http://localhost:3000"
+  },
+  "params": {
+    "baseUrl": "http://localhost:3000",
+    "maxPages": 12,
+    "maxDepth": 2,
+    "timeout": 2400000,
+    "minRecall": 1
+  },
+  "wallTimeMs": 182916,
+  "recall": 1,
+  "scoredCount": 10,
+  "detectedCount": 10,
+  "missed": [],
+  "staleExpectations": [],
+  "mustNotFindViolations": [],
+  "observational": [
+    {
+      "ruleId": "visual-regression-viewport",
+      "count": 14,
+      "severity": "low",
+      "detectorSample": "network"
+    },
+    {
+      "ruleId": "visual-baseline-captured",
+      "count": 9,
+      "severity": "info",
+      "detectorSample": "network"
+    },
+    {
+      "ruleId": "axe-label-content-name-mismatch",
+      "count": 7,
+      "severity": "serious",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "perf-budget-TBT",
+      "count": 7,
+      "severity": "medium",
+      "detectorSample": "performance"
+    },
+    {
+      "ruleId": "axe-label",
+      "count": 3,
+      "severity": "critical",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "axe-color-contrast",
+      "count": 2,
+      "severity": "serious",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "perf-budget-CLS",
+      "count": 2,
+      "severity": "high",
+      "detectorSample": "performance"
+    },
+    {
+      "ruleId": "api-status-mismatch",
+      "count": 1,
+      "severity": "low",
+      "detectorSample": "network"
+    },
+    {
+      "ruleId": "axe-aria-prohibited-attr",
+      "count": 1,
+      "severity": "serious",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "axe-link-in-text-block",
+      "count": 1,
+      "severity": "serious",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "axe-document-title",
+      "count": 1,
+      "severity": "serious",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "axe-html-has-lang",
+      "count": 1,
+      "severity": "serious",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "axe-button-name",
+      "count": 1,
+      "severity": "critical",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "visual-regression",
+      "count": 1,
+      "severity": "medium",
+      "detectorSample": "network"
+    }
+  ],
+  "findingsTotal": 62,
+  "events": [
+    {
+      "t": "2026-11-19T08:26:00.044Z",
+      "m": "Target down — booting Juice Shop from C:\\Users\\user\\AppData\\Local\\Temp\\juice-shop-smoke\\app\\juice-shop_20.4.0-SNAPSHOT"
+    },
+    {
+      "t": "2026-11-19T08:26:19.200Z",
+      "m": "running check CLI: http://localhost:3000 (pages 12, depth 2, timeout 2400000ms)"
+    }
+  ],
+  "finishedAt": "2026-11-19T08:29:22.121Z"
+}
