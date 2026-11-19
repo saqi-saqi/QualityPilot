@@ -129,6 +129,8 @@ directory to the repo root.
 > **Why `SQA_ALLOW_PRIVATE=true`?**
 > QualityPilot's enterprise SSRF boundary blocks private IP ranges (`127.0.0.1`, `10.0.0.0/8`, `192.168.0.0/16`, CGNAT, IPv4-mapped IPv6 in any spelling, cloud metadata endpoints) by default — for the MCP server, the dashboard and the `qualitypilot check` CLI alike. Setting `SQA_ALLOW_PRIVATE="true"` (or passing `--allow-private` to `check`) permits local loopback scanning so your agent can verify `http://localhost:3000` or local dev servers.
 
+> **Probe redirect policy (audit L-3):** every HTTP probe the scanner issues — security-header audit, authz reachability, injection differentials, API fuzz, link checks — goes through `ssrf.safeFetch`: the initial URL **and every redirect `Location`** are DNS-resolved and range-checked *before* QualityPilot connects to them. A redirect to a private/loopback/cloud-metadata address, a non-http(s) scheme, or an unparseable `Location` fails that probe closed (logged as an event, never reported as a target defect). Redirect chains are bounded; loops abort with `Too many redirects`.
+
 > **Security Note**: The `stdio` transport runs as a local subprocess with zero network exposure. If an HTTP/SSE transport is enabled for remote access in the future, token authentication becomes mandatory.
 
 ### Zero-config demo (no LLM key required)
@@ -386,6 +388,18 @@ The `report` markdown output doubles as a PR comment, and the SARIF file plugs i
         with:
           sarif_file: qualitypilot.sarif
 ```
+
+#### Supply-chain pinning & update process
+
+The Actions in this repository's own workflows (`.github/workflows/`) are pinned to the **full commit SHA of the release tag** — never a floating `@v4` — and the benchmark's Juice Shop image is pinned by **manifest digest** (`sha256:…`, valid on amd64 and arm64). A version comment beside each pin records which release it is.
+
+To update a pin:
+
+1. Resolve the new release's commit SHA from the upstream repository: `https://api.github.com/repos/<owner>/<repo>/commits/<tag>` — or the new tag's digest from Docker Hub: `https://hub.docker.com/v2/repositories/<owner>/<repo>/tags/<tag>` (the `digest` field is the manifest-list digest).
+2. Replace the SHA/digest and its version comment **together** (a stale version comment is worse than none).
+3. Dispatch the CI and Benchmark workflows and confirm green before merging.
+
+The same advice applies to the `saqi-saqi/QualityPilot@v…` reference in your own workflow files: pin the exact version tag you tested against (or its full SHA) rather than a floating major.
 
 ---
 ## 🎯 Benchmarked Recall & False-Positive Triage

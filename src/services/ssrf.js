@@ -294,13 +294,20 @@ export const safeAgent = new Agent({
 
 /**
  * Outbound fetch that enforces SSRF safety at connect-time without TOCTOU DNS gaps.
- * Re-validates each redirect target against validateUrl.
+ *
+ * Redirect policy (audit L-3): every hop — the initial URL AND every Location
+ * target — passes validateUrl() BEFORE the scanner connects to it. A redirect
+ * to a private/loopback/metadata address, a non-http(s) scheme, or an
+ * unparseable Location throws and the probe fails closed. Redirect chains are
+ * bounded by maxRedirects (loops terminate with 'Too many redirects').
+ * fetchImpl is injectable for tests; production uses undici with the
+ * connect-time-validated safeAgent dispatcher.
  */
-export async function safeFetch(url, init = {}, { maxRedirects = 5 } = {}) {
+export async function safeFetch(url, init = {}, { maxRedirects = 5, fetchImpl = undiciFetch } = {}) {
   let current = url;
   for (let i = 0; i <= maxRedirects; i++) {
     await validateUrl(current);
-    const res = await undiciFetch(current, {
+    const res = await fetchImpl(current, {
       ...init,
       dispatcher: safeAgent,
       redirect: 'manual',

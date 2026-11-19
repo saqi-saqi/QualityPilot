@@ -155,8 +155,11 @@ export function verifySchema(body, schema) {
  * `finding` alias for the first finding (back-compat).
  */
 export async function probeEndpoint(endpoint, ctx) {
-  const allowPrivate = ctx.options?.allowPrivateTargets || config.allowPrivateTargets;
-  const fetchImpl = ctx.options?.fetch || (allowPrivate ? globalThis.fetch : safeFetch);
+  // Transport (audit L-3): strict mode uses safeFetch (per-hop redirect SSRF
+  // validation). Dev mode (per-run allowPrivateTargets option or the env
+  // opt-in) keeps the plain fetch — the loopback fixture must be reachable.
+  const fetchImpl = ctx.options?.fetch
+    || ((ctx.options?.allowPrivateTargets || config.allowPrivateTargets) ? globalThis.fetch : safeFetch);
   if (!fetchImpl) {
     throw new Error('No fetch implementation available. Pass ctx.options.fetch or safeFetch.');
   }

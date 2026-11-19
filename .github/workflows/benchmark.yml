@@ -22,9 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      # SHA-pinned to the release commit (audit L-7) — update procedure: README → "Supply-chain pinning".
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
@@ -33,11 +34,13 @@ jobs:
           npm install
           npx playwright install --with-deps chromium
 
-      - name: Boot OWASP Juice Shop (pinned v20.4.0, ctf.key mounted)
+      - name: Boot OWASP Juice Shop (digest-pinned v20.4.0, ctf.key mounted)
         run: |
+          # Digest-pinned (audit L-7): manifest-list digest for the v20.4.0 tag,
+          # valid on amd64 and arm64 runners.
           docker run -d --name juice-shop -p 3000:3000 \
             -v "$GITHUB_WORKSPACE/benchmark/ctf.key:/juice-shop/ctf.key" \
-            bkimminich/juice-shop:v20.4.0
+            bkimminich/juice-shop@sha256:9bbaecc41791f00b002bc65931cc5ff355fbdb941fa72b06558c18dace43197b
 
       - name: Wait for Juice Shop
         run: |
@@ -65,7 +68,7 @@ jobs:
 
       - name: Upload benchmark receipt
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: recall-receipt
           path: |

@@ -1,5 +1,5 @@
 import { classifyOrigin } from '../../utils/classify.js';
-import { validateUrlSafe } from '../ssrf.js';
+import { validateUrlSafe, safeFetch } from '../ssrf.js';
 
 const MAX_LINKS_TO_CHECK = 50;
 const BATCH_SIZE = 5;
@@ -90,7 +90,10 @@ export async function checkLinks(pages, createFinding, onEvent, signal, siteOrig
                 signal?.addEventListener('abort', onAbort);
 
                 try {
-                    let res = await fetch(link, { 
+                    // safeFetch (audit L-3): the link already passed
+                    // validateUrlSafe above, but redirect hops are
+                    // re-validated before the scanner connects to them.
+                    let res = await safeFetch(link, { 
                         method: 'HEAD', 
                         signal: abortController.signal,
                         headers: { 'User-Agent': 'QAgent/1.0' }
@@ -98,7 +101,7 @@ export async function checkLinks(pages, createFinding, onEvent, signal, siteOrig
 
                     // HEAD fallback to GET for 405, 403, 429
                     if ([405, 403, 429].includes(res.status)) {
-                        res = await fetch(link, { 
+                        res = await safeFetch(link, { 
                             method: 'GET', 
                             signal: abortController.signal,
                             headers: { 'User-Agent': 'QAgent/1.0' }

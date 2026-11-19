@@ -4,7 +4,8 @@
  * Consumes: plan.pages[] (for URLs to probe) + crawler's captured headers
  * Produces: findings for missing/insecure headers, mixed content, bad cookies
  *
- * No Playwright needed — uses fetch. Fully testable.
+ * No Playwright needed — uses ssrf.safeFetch (per-hop redirect SSRF
+ * validation, audit L-3). Fully testable.
  *
  * Reference standards:
  *   • OWASP Secure Headers Project
@@ -13,6 +14,8 @@
  */
 
 import { rollupAcrossPages } from '../services/findingRollup.js';
+import { safeFetch } from '../services/ssrf.js';
+import { config } from '../utils/config.js';
 
 // ─── security header rules ──────────────────────────────────────────
 
@@ -275,7 +278,11 @@ export function detectMixedContent(page) {
  * flagged by the crawler.
  */
 export async function probeSecurityHeaders(pageUrl, ctx) {
-  const fetchImpl = ctx.options?.fetch || globalThis.fetch;
+  // Transport (audit L-3): strict mode → safeFetch (every redirect hop
+  // SSRF-re-validated); dev mode (per-run allowPrivateTargets option or env
+  // opt-in) keeps the plain fetch transport so loopback fixtures are reachable.
+  const fetchImpl = ctx.options?.fetch
+    || ((ctx.options?.allowPrivateTargets || config.allowPrivateTargets) ? globalThis.fetch : safeFetch);
   if (!fetchImpl) throw new Error('No fetch available — pass ctx.options.fetch');
   const timeoutMs = ctx.options?.timeout ?? 10000;
 
@@ -289,7 +296,6 @@ export async function probeSecurityHeaders(pageUrl, ctx) {
   try {
     const response = await fetchImpl(pageUrl, {
       method: 'GET',
-      redirect: 'follow',
       signal: ctrl.signal,
     });
     const headers = {};

@@ -10,7 +10,13 @@
  *
  * Generators are pure functions returning a string or array of strings.
  * Each generator is unit-testable in isolation.
+ *
+ * Transport (audit L-3): API-field fuzz requests go through ssrf.safeFetch —
+ * every redirect hop is SSRF-re-validated before the scanner connects.
  */
+
+import { safeFetch } from '../services/ssrf.js';
+import { config } from '../utils/config.js';
 
 // ─── generators ──────────────────────────────────────────────────────
 
@@ -102,7 +108,11 @@ export async function fuzzApiField(target, value, ctx) {
     return { status: null, threw: false, skipped: true };
   }
 
-  const fetchImpl = ctx.options?.fetch || globalThis.fetch;
+  // Transport (audit L-3): strict mode → safeFetch (every redirect hop
+  // SSRF-re-validated); dev mode (per-run allowPrivateTargets option or env
+  // opt-in) keeps the plain fetch transport so loopback fixtures are reachable.
+  const fetchImpl = ctx.options?.fetch
+    || ((ctx.options?.allowPrivateTargets || config.allowPrivateTargets) ? globalThis.fetch : safeFetch);
   if (!fetchImpl) throw new Error('No fetch available');
 
   const fallbackOrigin = (() => {
@@ -130,11 +140,13 @@ export async function fuzzApiField(target, value, ctx) {
     // Phase 0 Fix E2: timeout/abort/DNS failures are flagged here so the
     // finding-creation path can classify them suspected/environmental instead
     // of confirmed bugs. Genuine 5xx/crash outcomes are unaffected.
+    // audit L-3: SSRF-blocked redirect hops (safeFetch) are likewise "probe
+    // could not complete", not an app fault — they must not fabricate findings.
     return {
       status: null,
       threw: true,
       error: msg,
-      environmental: /timeout|abort|econnrefused|enotfound|eai_again|getaddrinfo|dns/i.test(msg),
+      environmental: /timeout|abort|econnrefused|enotfound|eai_again|getaddrinfo|dns|non-public|not allowed|resolves to private|too many redirects|invalid url/i.test(msg),
     };
   }
 }

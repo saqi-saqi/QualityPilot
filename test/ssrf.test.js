@@ -336,3 +336,130 @@ describe('safeFetch', () => {
     );
   });
 });
+
+// ─── safeFetch redirect handling (audit L-3) ──────────────────────────────
+// The redirect VALIDATION is under test: every Location target must pass
+// validateUrl BEFORE the second request runs. Hop-0 uses a TEST-NET-2 IP
+// literal (198.51.100.1 — public by the private-range table; an IP literal,
+// so validateUrl needs no DNS) and fetchImpl is injected, so nothing here
+// touches the network.
+function mockFetch3xx(script) {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(String(url));
+    return script(String(url), calls.length);
+  };
+  fetchImpl.calls = calls;
+  return fetchImpl;
+}
+const redirectTo = (location, status = 302) => ({
+  status,
+  headers: { get: (name) => (String(name).toLowerCase() === 'location' ? location : null) },
+});
+const okResponse = { status: 200, headers: { get: () => null } };
+
+describe('safeFetch redirect handling (audit L-3)', () => {
+  beforeEach(() => {
+    delete process.env.SQA_ALLOW_PRIVATE;
+    delete process.env.ALLOW_PRIVATE_HOSTS;
+    delete process.env.ALLOW_PRIVATE_TARGETS;
+  });
+
+  it('follows a safe relative redirect and resolves it against the current URL', async () => {
+    const f = mockFetch3xx((url) => (url.endsWith('/x') ? redirectTo('/final') : okResponse));
+    const res = await safeFetch('http://198.51.100.1/x', {}, { fetchImpl: f });
+    assert.equal(res.status, 200);
+    assert.deepEqual(f.calls, ['http://198.51.100.1/x', 'http://198.51.100.1/final']);
+  });
+
+  it('re-validates every hop BEFORE connecting: cloud-metadata redirect is blocked', async () => {
+    const f = mockFetch3xx(() => redirectTo('http://169.254.169.254/latest/meta-data/'));
+    await assert.rejects(
+      () => safeFetch('http://198.51.100.1/x', {}, { fetchImpl: f }),
+      /URL resolves to private IP: 169\.254\.169\.254/,
+    );
+    assert.equal(f.calls.length, 1, 'the second hop must never be fetched');
+  });
+
+  it('blocks a redirect to loopback', async () => {
+    const f = mockFetch3xx(() => redirectTo('http://127.0.0.1:8080/admin'));
+    await assert.rejects(
+      () => safeFetch('http://198.51.100.1/x', {}, { fetchImpl: f }),
+      /Private hostname not allowed|resolves to private IP/,
+    );
+    assert.equal(f.calls.length, 1);
+  });
+
+  it('blocks redirects to RFC1918 ranges', async () => {
+    const f = mockFetch3xx(() => redirectTo('http://10.0.0.5/internal'));
+    await assert.rejects(
+      () => safeFetch('http://198.51.100.1/x', {}, { fetchImpl: f }),
+      /resolves to private IP: 10\.0\.0\.5/,
+    );
+    assert.equal(f.calls.length, 1);
+  });
+
+  it('blocks IPv4-mapped IPv6 redirects in any spelling', async () => {
+    for (const host of ['[::ffff:7f00:1]', '[::ffff:a9fe:a9fe]']) {
+      const f = mockFetch3xx(() => redirectTo(`http://${host}/`));
+      await assert.rejects(
+        () => safeFetch('http://198.51.100.1/x', {}, { fetchImpl: f }),
+        /resolves to private IP/,
+        host,
+      );
+      assert.equal(f.calls.length, 1, host);
+    }
+  });
+
+  it('rejects a bare (unbracketed) IPv6 Location as an invalid URL — fail closed', async () => {
+    // RFC 3986: IPv6 literals require brackets in URLs, so WHATWG URL parsing
+    // rejects this Location before validation even runs. Blocked either way.
+    const f = mockFetch3xx(() => redirectTo('http://0:0:0:0:0:ffff:a9fe:a9fe/'));
+    await assert.rejects(() => safeFetch('http://198.51.100.1/x', {}, { fetchImpl: f }), /Invalid URL/);
+    assert.equal(f.calls.length, 1);
+  });
+
+  it('bounds redirect loops (Too many redirects after maxRedirects hops)', async () => {
+    const f = mockFetch3xx((url, n) => redirectTo(`/hop${n}`));
+    await assert.rejects(
+      () => safeFetch('http://198.51.100.1/x', {}, { fetchImpl: f }),
+      /Too many redirects/,
+    );
+    assert.equal(f.calls.length, 6, 'maxRedirects=5 → at most 6 requests');
+  });
+
+  it('rejects an unparseable Location header', async () => {
+    const f = mockFetch3xx(() => redirectTo('http://['));
+    await assert.rejects(() => safeFetch('http://198.51.100.1/x', {}, { fetchImpl: f }), /Invalid/);
+    assert.equal(f.calls.length, 1);
+  });
+
+  it('rejects a redirect to a non-http(s) scheme', async () => {
+    const f = mockFetch3xx(() => redirectTo('ftp://198.51.100.1/file'));
+    await assert.rejects(() => safeFetch('http://198.51.100.1/x', {}, { fetchImpl: f }), /Protocol not allowed/);
+    assert.equal(f.calls.length, 1);
+  });
+
+  it('honors an explicit maxRedirects option', async () => {
+    const f = mockFetch3xx(() => redirectTo('/next'));
+    await assert.rejects(
+      () => safeFetch('http://198.51.100.1/x', {}, { fetchImpl: f, maxRedirects: 0 }),
+      /Too many redirects/,
+    );
+    assert.equal(f.calls.length, 1);
+  });
+
+  it('developer opt-in (allow-private) keeps private redirects followable — documented dev mode', async () => {
+    const previous = process.env.SQA_ALLOW_PRIVATE;
+    process.env.SQA_ALLOW_PRIVATE = 'true';
+    try {
+      const f = mockFetch3xx((url) => (url.endsWith('/x') ? redirectTo('http://127.0.0.1:8080/y') : okResponse));
+      const res = await safeFetch('http://198.51.100.1/x', {}, { fetchImpl: f });
+      assert.equal(res.status, 200);
+      assert.deepEqual(f.calls, ['http://198.51.100.1/x', 'http://127.0.0.1:8080/y']);
+    } finally {
+      if (previous === undefined) delete process.env.SQA_ALLOW_PRIVATE;
+      else process.env.SQA_ALLOW_PRIVATE = previous;
+    }
+  });
+});

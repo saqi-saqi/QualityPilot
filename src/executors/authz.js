@@ -13,7 +13,14 @@
  *
  * No browser, no mutations, no authorization gate: this is read-only traffic
  * the crawl already generated.
+ *
+ * Transport (audit L-3): probe requests go through ssrf.safeFetch — every
+ * redirect hop is SSRF-re-validated BEFORE the scanner connects; a blocked
+ * hop fails the probe closed and is logged.
  */
+
+import { safeFetch } from '../services/ssrf.js';
+import { config } from '../utils/config.js';
 
 const ADMIN_PATH_RE = /\/admin(?:istrator|istration)?(?=\/|$|\.)/i;
 const MAX_ENDPOINTS = 10;
@@ -37,7 +44,11 @@ export default async function authzExecutor(ctx) {
     return { findings, stats };
   }
 
-  const fetchImpl = ctx.options?.fetch || globalThis.fetch;
+  // Transport (audit L-3): strict mode → safeFetch (every redirect hop
+  // SSRF-re-validated); dev mode (per-run allowPrivateTargets option or env
+  // opt-in) keeps the plain fetch transport so loopback fixtures are reachable.
+  const fetchImpl = ctx.options?.fetch
+    || ((ctx.options?.allowPrivateTargets || config.allowPrivateTargets) ? globalThis.fetch : safeFetch);
   const timeoutMs = ctx.options?.timeout ?? 10000;
 
   for (const endpoint of endpoints.slice(0, MAX_ENDPOINTS)) {
@@ -59,15 +70,17 @@ export default async function authzExecutor(ctx) {
       if (ctx.signal) ctx.signal.addEventListener('abort', () => ctrl.abort(), { once: true });
       const res = await fetchImpl(url, {
         method: 'GET',
-        redirect: 'follow',
         signal: ctrl.signal,
       });
       clearTimeout(timer);
       status = res.status;
       const body = await res.text();
       length = body.length;
-    } catch {
-      continue; // unreachable — the crawler already reports it
+    } catch (err) {
+      // Includes SSRF-blocked redirect hops (safeFetch): fail closed, but say
+      // why — silent swallowing hid a detector bug once (Phase 8 lesson).
+      ctx.onEvent?.(`authz probe blocked/failed for ${url}: ${err?.message || err}`);
+      continue; // unreachable or blocked — the crawler already reports reachability
     }
 
     if (status >= 200 && status < 300) {

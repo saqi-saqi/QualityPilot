@@ -26,8 +26,14 @@
  * stacked statements. Login sessions created by probe B die with the cell's
  * browser context. Account-creation pages (register/signup) are excluded —
  * probes must not create data.
+ *
+ * Transport (audit L-3): HTTP probes go through ssrf.safeFetch — every
+ * redirect hop is SSRF-re-validated before the scanner connects; a blocked
+ * hop fails the probe closed and is logged.
  */
 
+import { safeFetch } from '../services/ssrf.js';
+import { config } from '../utils/config.js';
 import { matchSqlError, isLoopbackUrl } from '../security/injectionSignatures.js';
 
 /** Clause-closing probes: surface SQL errors / change the result set. */
@@ -80,7 +86,11 @@ export default async function injectionExecutor(ctx) {
     return { findings, stats };
   }
 
-  const fetchImpl = ctx.options?.fetch || globalThis.fetch;
+  // Transport (audit L-3): strict mode → safeFetch (every redirect hop
+  // SSRF-re-validated); dev mode (per-run allowPrivateTargets option or env
+  // opt-in) keeps the plain fetch transport so loopback fixtures are reachable.
+  const fetchImpl = ctx.options?.fetch
+    || ((ctx.options?.allowPrivateTargets || config.allowPrivateTargets) ? globalThis.fetch : safeFetch);
   const timeoutMs = ctx.options?.timeout ?? 10000;
 
   // ─── A. GET query-param differential ────────────────────────────────
@@ -101,12 +111,13 @@ export default async function injectionExecutor(ctx) {
       let baseline;
       try {
         const res = await fetchImpl(`${base}${endpoint.path}?${new URLSearchParams(endpoint.queryParams).toString()}`, {
-          signal: ctx.signal, redirect: 'follow',
+          signal: ctx.signal,
         });
         const body = await res.text();
         baseline = { status: res.status, len: body.length };
-      } catch {
-        continue; // unreachable endpoint — the crawler already reports it
+      } catch (err) {
+        ctx.onEvent?.(`injection probe blocked/failed for ${base}${endpoint.path}: ${err?.message || err}`);
+        continue; // unreachable or SSRF-blocked — the crawler already reports reachability
       }
       stats.endpointsProbed++;
       if (baseline.status >= 500) continue;
@@ -117,10 +128,11 @@ export default async function injectionExecutor(ctx) {
 
         let mutated;
         try {
-          const res = await fetchImpl(`${base}${endpoint.path}?${qs}`, { signal: ctx.signal, redirect: 'follow' });
+          const res = await fetchImpl(`${base}${endpoint.path}?${qs}`, { signal: ctx.signal });
           const body = await res.text();
           mutated = { status: res.status, len: body.length, signature: matchSqlError(body), snippet: body.slice(0, 200) };
-        } catch {
+        } catch (err) {
+          ctx.onEvent?.(`injection probe blocked/failed for ${base}${endpoint.path} (mutated): ${err?.message || err}`);
           continue;
         }
 
@@ -178,8 +190,9 @@ export default async function injectionExecutor(ctx) {
         signal: ctx.signal,
       });
       baseline = { status: res.status };
-    } catch {
-      continue; // unreachable — the crawler already reports it
+    } catch (err) {
+      ctx.onEvent?.(`injection probe blocked/failed for ${endpoint.method} ${base}${endpoint.path}: ${err?.message || err}`);
+      continue; // unreachable or SSRF-blocked
     }
     stats.endpointsProbed++;
     if (baseline.status >= 500) continue;
@@ -200,7 +213,8 @@ export default async function injectionExecutor(ctx) {
         mSnippet = await res.text();
         mStatus = res.status;
         mSig = matchSqlError(mSnippet);
-      } catch {
+      } catch (err) {
+        ctx.onEvent?.(`injection probe blocked/failed for ${endpoint.method} ${base}${endpoint.path} (mutated body): ${err?.message || err}`);
         continue;
       }
 
