@@ -7,87 +7,101 @@ import { Agent, fetch as undiciFetch } from 'undici';
 const dnsCache = new Map();
 const DNS_CACHE_TTL_MS = 60 * 1000;
 
-export function isPrivateIP(ip) {
-  if (!net.isIP(ip)) {
-    return false;
-  }
+/**
+ * Expand an IPv6 address (including an embedded dotted-quad tail, e.g.
+ * "64:ff9b::192.0.2.33") into eight 16-bit groups, or null when the input
+ * is not a plain IPv6 literal.
+ */
+function expandIPv6(ip) {
+  let addr = String(ip).toLowerCase();
+  if (addr.startsWith('[') && addr.endsWith(']')) addr = addr.slice(1, -1);
+  if (addr.includes('%')) return null; // zone id — not a routable literal
+  const halves = addr.split('::');
+  if (halves.length > 2) return null;
 
-  // Convert IPv4-mapped IPv6 to IPv4
-  let checkIp = ip;
-  if (net.isIPv6(ip) && ip.toLowerCase().startsWith('::ffff:')) {
-    checkIp = ip.substring(7);
-  }
-
-  if (net.isIPv4(checkIp)) {
-    const parts = checkIp.split('.').map(part => parseInt(part, 10));
-    const [a, b, c, d] = parts;
-
-    // 127.0.0.0/8 (loopback)
-    if (a === 127) return true;
-    // 10.0.0.0/8 (private)
-    if (a === 10) return true;
-    // 172.16.0.0/12 (private)
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    // 192.168.0.0/16 (private)
-    if (a === 192 && b === 168) return true;
-    // 169.254.0.0/16 (link-local)
-    if (a === 169 && b === 254) return true;
-    // 0.0.0.0/8 (unspecified)
-    if (a === 0) return true;
-    // 100.64.0.0/10 (CGNAT / carrier-grade NAT — also Tailscale 100.x)
-    if (a === 100 && b >= 64 && b <= 127) return true;
-    // 198.18.0.0/15 (benchmark / inter-network device testing)
-    if (a === 198 && (b === 18 || b === 19)) return true;
-    // 224.0.0.0/4 (multicast) + 240.0.0.0/4 (reserved, incl. broadcast)
-    if (a >= 224) return true;
-
-    return false;
-  }
-
-  if (net.isIPv6(checkIp)) {
-    const normalized = checkIp.toLowerCase();
-    
-    // ::1 (IPv6 loopback)
-    if (normalized === '::1') return true;
-    
-    // Parse IPv6 address parts
-    // Expand completely
-    let hexParts = normalized.split(':');
-    if (hexParts.includes('')) {
-      const emptyIndex = hexParts.indexOf('');
-      const toFill = 8 - (hexParts.length - 1);
-      hexParts.splice(emptyIndex, 1, ...Array(toFill).fill('0'));
+  const parseGroups = (parts) => {
+    const groups = [];
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (part.includes('.')) {
+        // An embedded IPv4 tail is only legal as the final group.
+        if (i !== parts.length - 1) return null;
+        const quads = part.split('.');
+        if (quads.length !== 4) return null;
+        const bytes = quads.map((q) => (/^\d{1,3}$/.test(q) ? Number(q) : NaN));
+        if (bytes.some((b) => !Number.isInteger(b) || b < 0 || b > 255)) return null;
+        groups.push((bytes[0] << 8) | bytes[1], (bytes[2] << 8) | bytes[3]);
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(part)) return null;
+        groups.push(parseInt(part, 16));
+      }
     }
-    hexParts = hexParts.map(p => p || '0');
-    
-    const firstPart = parseInt(hexParts[0], 16);
+    return groups;
+  };
 
-    // fc00::/7 (IPv6 unique local)
-    if ((firstPart & 0xfe00) === 0xfc00) return true;
+  if (halves.length === 2) {
+    const head = halves[0] ? parseGroups(halves[0].split(':')) : [];
+    const tail = halves[1] ? parseGroups(halves[1].split(':')) : [];
+    if (!head || !tail) return null;
+    const fill = 8 - head.length - tail.length;
+    if (fill < 0) return null;
+    return [...head, ...Array(fill).fill(0), ...tail];
+  }
+  const groups = parseGroups(addr.split(':'));
+  return groups && groups.length === 8 ? groups : null;
+}
 
-    // fe80::/10 (IPv6 link-local)
-    if ((firstPart & 0xffc0) === 0xfe80) return true;
+function isPrivateIPv4(checkIp) {
+  const parts = checkIp.split('.').map(part => parseInt(part, 10));
+  const [a, b, c, d] = parts;
 
-    // 2002::/16 (6to4 — embeds an IPv4 address, can tunnel to intranets)
-    if (firstPart === 0x2002) return true;
+  // 127.0.0.0/8 (loopback)
+  if (a === 127) return true;
+  // 10.0.0.0/8 (private)
+  if (a === 10) return true;
+  // 172.16.0.0/12 (private)
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  // 192.168.0.0/16 (private)
+  if (a === 192 && b === 168) return true;
+  // 169.254.0.0/16 (link-local)
+  if (a === 169 && b === 254) return true;
+  // 0.0.0.0/8 (unspecified)
+  if (a === 0) return true;
+  // 100.64.0.0/10 (CGNAT / carrier-grade NAT — also Tailscale 100.x)
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  // 198.18.0.0/15 (benchmark / inter-network device testing)
+  if (a === 198 && (b === 18 || b === 19)) return true;
+  // 224.0.0.0/4 (multicast) + 240.0.0.0/4 (reserved, incl. broadcast)
+  if (a >= 224) return true;
 
-    // 64:ff9b::/96 (NAT64 — last 32 bits map to an IPv4 host)
-    if (firstPart === 0x64 &&
-        parseInt(hexParts[1], 16) === 0xff9b &&
-        parseInt(hexParts[2], 16) === 0 &&
-        parseInt(hexParts[3], 16) === 0 &&
-        parseInt(hexParts[4], 16) === 0 &&
-        parseInt(hexParts[5], 16) === 0) return true;
+  return false;
+}
 
-    // ff00::/8 (IPv6 multicast)
-    if ((firstPart & 0xff00) === 0xff00) return true;
+export function isPrivateIP(ip) {
+  if (!net.isIP(ip)) return false;
+  const value = String(ip);
+  if (net.isIPv4(value)) return isPrivateIPv4(value);
 
-    // Unspecified
-    if (hexParts.every(p => parseInt(p, 16) === 0)) return true;
-    
-    return false;
+  const groups = expandIPv6(value);
+  if (!groups) return false;
+
+  // IPv4-mapped ::ffff:0:0/96 — in ANY spelling. Only the dotted form
+  // ("::ffff:127.0.0.1") used to be handled; the hex forms ("::ffff:7f00:1",
+  // "0:0:0:0:0:ffff:a9fe:a9fe" — the cloud metadata address) fell through
+  // and were treated as public.
+  if (groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0
+      && groups[4] === 0 && groups[5] === 0xffff) {
+    return isPrivateIPv4(`${(groups[6] >> 8) & 0xff}.${groups[6] & 0xff}.${(groups[7] >> 8) & 0xff}.${groups[7] & 0xff}`);
   }
 
+  if (groups.every((g) => g === 0)) return true;                                 // :: unspecified
+  if (groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1) return true;  // ::1 loopback
+  const first = groups[0];
+  if ((first & 0xfe00) === 0xfc00) return true;   // fc00::/7 unique local
+  if ((first & 0xffc0) === 0xfe80) return true;   // fe80::/10 link-local
+  if (first === 0x2002) return true;              // 2002::/16 6to4 (tunnels IPv4)
+  if (first === 0x64 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) return true; // 64:ff9b::/96 NAT64
+  if ((first & 0xff00) === 0xff00) return true;   // ff00::/8 multicast
   return false;
 }
 
@@ -132,8 +146,11 @@ export async function validateUrl(urlString) {
     throw new Error('Protocol not allowed');
   }
 
-  const hostname = urlObj.hostname.toLowerCase();
-  const localDemoHostnames = new Set(['localhost', '127.0.0.1', '[::1]', '0.0.0.0']);
+  // URL.hostname keeps IPv6 brackets ("[::1]") — strip them so the literal
+  // reaches the IP-literal / private-range checks below instead of failing
+  // DNS resolution (bracketed strings are not valid DNS names).
+  const hostname = urlObj.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  const localDemoHostnames = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0']);
 
   // Developer-only switch (ALLOW_PRIVATE_HOSTS=true, SQA_ALLOW_PRIVATE=true):
   // Off by default. Fine on your local machine, but NEVER turn on for a public service.
@@ -238,12 +255,14 @@ export async function resolveAndPin(urlString) {
  * Honors config.allowPrivateTargets for testing/dev environments.
  */
 export async function resolvePublic(hostname) {
-  const localDemoHostnames = new Set(['localhost', '127.0.0.1', '[::1]', '0.0.0.0']);
+  // Strip IPv6 brackets so literals resolve the same way as validateUrl.
+  const bareHost = String(hostname).toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  const localDemoHostnames = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0']);
   const allowPrivate = isPrivateTargetAllowed();
-  if (allowPrivate && localDemoHostnames.has(hostname.toLowerCase())) {
-    return [{ address: hostname.replace(/[\[\]]/g, ''), family: net.isIPv6(hostname) ? 6 : 4 }];
+  if (allowPrivate && localDemoHostnames.has(bareHost)) {
+    return [{ address: bareHost, family: net.isIPv6(bareHost) ? 6 : 4 }];
   }
-  const addrs = await dns.promises.lookup(hostname, { all: true, verbatim: true });
+  const addrs = await dns.promises.lookup(bareHost, { all: true, verbatim: true });
   if (!addrs || addrs.length === 0) {
     throw new Error(`DNS resolution failed for ${hostname}`);
   }

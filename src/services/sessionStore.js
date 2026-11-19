@@ -151,7 +151,9 @@ export class SessionStore {
     const key = await this._getKey();
 
     await fs.mkdir(this.dir, { recursive: true });
-    await fs.writeFile(this._file(monitorId, role), this._encrypt(storageState, key));
+    // 0600 — the ciphertext holds live credentials; keep it as tight as the
+    // key material (audit L-1; no-op on platforms without POSIX modes).
+    await fs.writeFile(this._file(monitorId, role), this._encrypt(storageState, key), { mode: 0o600 });
 
     // The legacy file IS the 'default' session — once its replacement exists,
     // drop it so loadSession/listSessions cannot surface stale credentials.

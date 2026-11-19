@@ -165,6 +165,9 @@ export function calculateScore(findings, options = {}) {
     return Math.round(rawScore * coverageRatio * 10) / 10;
   }
 
+  // NOTE: deliberately NOT rounded here — tests pin the exact log2 scaling
+  // (±1e-9). Float noise is normalized where scores are SERIALIZED (CLI JSON
+  // and summaries), not inside the scorer.
   return rawScore;
 }
 
