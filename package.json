@@ -42,8 +42,7 @@
     "src",
     "dashboard",
     "scripts/migrate-json-to-sqlite.js",
-    ".env.example",
-    "CHANGES.md"
+    ".env.example"
   ],
   "scripts": {
     "test": "node scripts/run-tests.mjs",
