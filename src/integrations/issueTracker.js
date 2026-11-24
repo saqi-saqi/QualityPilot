@@ -41,6 +41,9 @@
  *      partial scan can never close real bugs on pages it never visited.
  */
 
+// Audit H-3: one credential-scrubbing boundary shared with MCP responses.
+import { scrubText } from '../mcp/redact.js';
+
 const SEVERITY_LABELS = {
   critical: 'P0-critical',
   high:     'P1-high',
@@ -128,15 +131,21 @@ export function pageFromSignature(signature) {
 
 /**
  * Build a Markdown body for an issue from a finding.
+ *
+ * Audit H-3: tracker bodies are an EXTERNAL destination. Evidence and
+ * descriptions routinely embed Set-Cookie values, response bodies and
+ * session replays, so every free-text field is scrubbed through the same
+ * credential boundary used for MCP responses before it leaves the process.
  */
 export function buildIssueBody(finding, runContext = {}) {
   const lines = [];
+  const safe = (value) => scrubText(value);
 
   lines.push(`### ${finding.title || 'Untitled finding'}`);
   lines.push('');
 
   if (finding.description) {
-    lines.push(finding.description);
+    lines.push(safe(finding.description));
     lines.push('');
   }
 
@@ -190,7 +199,7 @@ export function buildIssueBody(finding, runContext = {}) {
     lines.push('#### Evidence');
     lines.push('');
     lines.push('```');
-    lines.push(finding.evidence);
+    lines.push(safe(finding.evidence));
     lines.push('```');
     lines.push('');
   }
@@ -215,7 +224,7 @@ export function buildIssueBody(finding, runContext = {}) {
     lines.push('#### Repro Steps');
     lines.push('');
     finding.reproSteps.forEach((step, i) => {
-      lines.push(`${i + 1}. ${step}`);
+      lines.push(`${i + 1}. ${safe(step)}`);
     });
     lines.push('');
   }
@@ -223,7 +232,7 @@ export function buildIssueBody(finding, runContext = {}) {
   if (finding.suggestedFix) {
     lines.push('#### Suggested Fix');
     lines.push('');
-    lines.push(finding.suggestedFix);
+    lines.push(safe(finding.suggestedFix));
     lines.push('');
   }
 

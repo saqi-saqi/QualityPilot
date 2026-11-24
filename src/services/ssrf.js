@@ -303,7 +303,7 @@ export const safeAgent = new Agent({
  * fetchImpl is injectable for tests; production uses undici with the
  * connect-time-validated safeAgent dispatcher.
  */
-export async function safeFetch(url, init = {}, { maxRedirects = 5, fetchImpl = undiciFetch } = {}) {
+export async function safeFetch(url, init = {}, { maxRedirects = 5, timeoutMs = 10_000, fetchImpl = undiciFetch } = {}) {
   let current = url;
   for (let i = 0; i <= maxRedirects; i++) {
     await validateUrl(current);
@@ -311,7 +311,12 @@ export async function safeFetch(url, init = {}, { maxRedirects = 5, fetchImpl = 
       ...init,
       dispatcher: safeAgent,
       redirect: 'manual',
-      signal: init.signal ?? AbortSignal.timeout(10_000),
+      // Audit M-7: `init.signal ?? timeout` disabled the default deadline
+      // whenever a caller passed its run-abort signal, so one hung endpoint
+      // could stall an executor until the whole run aborted. Compose both.
+      signal: init.signal
+        ? AbortSignal.any([init.signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs),
     });
     const loc = res.headers.get('location');
     if (res.status >= 300 && res.status < 400 && loc) {

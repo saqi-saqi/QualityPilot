@@ -17,7 +17,7 @@ import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
-import { validateUrl } from '../services/ssrf.js';
+import { validateUrl, resolveAndPin } from '../services/ssrf.js';
 import { createFindingFactory } from '../services/findingFactory.js';
 import { runAxeOnPage, axeResultsToFindings } from '../executors/a11yDeep.js';
 
@@ -54,13 +54,23 @@ export async function scanSinglePage({ url, checks = {} }) {
   // targets unless SQA_ALLOW_PRIVATE=true.
   const validated = await validateUrl(url);
   const targetUrl = validated.url;
+  // Audit L-4: validate-once left a DNS-rebinding window between validateUrl
+  // and the browser's own resolution. Pin the validated IP in Chromium, the
+  // same way the scan BrowserPool does.
+  const pin = await resolveAndPin(targetUrl);
+  if (!pin) {
+    throw new Error(`Refusing to launch a browser for ${targetUrl}: SSRF pin could not be resolved`);
+  }
 
   const budgetMs = quickBudgetMs();
   const startedAt = new Date().toISOString();
   const createFinding = createFindingFactory();
   const findings = [];
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+    args: browserLaunchArgs(pin.rules),
+  });
   try {
     const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
     const page = await context.newPage();
@@ -151,7 +161,9 @@ export async function scanSinglePage({ url, checks = {} }) {
           if (axePath) {
             await page.addScriptTag({ path: axePath });
           } else {
-            await page.addScriptTag({ url: 'https://unpkg.com/axe-core@4.10.0/axe.min.js' });
+            // Audit L-2: never fetch axe-core from a CDN into a scanned page
+            // (unpinned third-party code execution). Skip instead.
+            throw new Error('axe-core is not installed locally — refusing the CDN fallback (supply-chain safety)');
           }
           const results = await runAxeOnPage(page, []);
           findings.push(...axeResultsToFindings(results, targetUrl, createFinding));
@@ -273,6 +285,11 @@ export async function scanSinglePage({ url, checks = {} }) {
   } finally {
     await browser.close().catch(() => {});
   }
+}
+
+/** Chromium args that pin validated hostnames to their validated IPs. */
+export function browserLaunchArgs(pinRules) {
+  return pinRules ? [`--host-resolver-rules=${pinRules}`] : [];
 }
 
 export { quickBudgetMs };
