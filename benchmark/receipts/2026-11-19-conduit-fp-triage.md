@@ -2,7 +2,7 @@
 
 - **Date:** 2026-11-19
 - **Target:** https://demo.realworld.show
-- **QualityPilot:** package version 0.4.0
+- **QualityPilot:** package version 0.4.0 · commit **not recorded** (receipt predates audit M-8 provenance capture; SHA left null rather than guessed)
 - **Run:** `run_matrix_1795076912219_0de80c0b`
 - **Command:** `qualitypilot check https://demo.realworld.show --authorized-target --max-pages 12 --max-depth 2 --timeout 2400000 --format json`
 - **Crawl:** 140 URLs deduplicated

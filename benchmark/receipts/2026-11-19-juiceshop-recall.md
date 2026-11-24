@@ -1,6 +1,7 @@
 # QualityPilot recall benchmark — OWASP Juice Shop v20.4.0 (Windows standalone zip)
 
 - **Run:** run_matrix_1795076779880_ba4b4d0f · status `completed` · score 0
+- **Tooling:** qualitypilot@0.4.0 · commit **not recorded** (this receipt predates audit M-8 provenance capture; see the JSON note — the SHA is left null rather than guessed)
 - **Scan params:** max-pages 12, max-depth 2, timeout 2400000ms, wall time 183s
 - **Findings (post-dedup):** 62 distinct rules: 24
 

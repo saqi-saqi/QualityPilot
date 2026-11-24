@@ -219,12 +219,37 @@ export function scoreReport({ report, groundtruth, liveChecks }) {
 }
 
 // ─── report rendering ─────────────────────────────────────────────────
+/**
+ * Tooling provenance recorded in every receipt (audit M-8): the version and
+ * the exact commit the scan ran at. Unknown values stay null — never guessed.
+ */
+function toolingProvenance() {
+  const out = { version: null, commit: null, dirty: null };
+  try {
+    out.version = JSON.parse(readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')).version;
+  } catch { /* package.json unreadable — leave null */ }
+  try {
+    const rev = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' });
+    if (rev.status === 0) out.commit = rev.stdout.trim();
+    const status = spawnSync('git', ['status', '--porcelain=v1'], { cwd: REPO_ROOT, encoding: 'utf8' });
+    if (status.status === 0) out.dirty = status.stdout.trim().length > 0;
+  } catch { /* git unavailable — keep nulls */ }
+  return out;
+}
+
 function renderMarkdown({ meta, result, report, elapsedMs, scored, detected, missed, stale, fpHits, observational }) {
   const pct = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
   const lines = [];
   lines.push(`# QualityPilot recall benchmark — ${meta.target}`);
   lines.push('');
   lines.push(`- **Run:** ${report.runId} · status \`${report.status}\` · score ${report.score ?? '—'}`);
+  // Audit M-8: a receipt must state the tooling it describes (version +
+  // commit). Without it a receipt silently drifts from the code.
+  if (meta.tooling) {
+    const t = meta.tooling;
+    const commit = t.commit ? t.commit.slice(0, 12) : 'not recorded';
+    lines.push(`- **Tooling:** qualitypilot@${t.version} · commit \`${commit}\`${t.dirty ? ' · dirty working tree' : ''}`);
+  }
   lines.push(`- **Scan params:** max-pages ${meta.maxPages}, max-depth ${meta.maxDepth}, timeout ${meta.timeout}ms, wall time ${Math.round(elapsedMs / 1000)}s`);
   lines.push(`- **Findings (post-dedup):** ${result.findingsTotal} distinct rules: ${result.byRuleSize}`);
   lines.push('');
@@ -311,6 +336,7 @@ async function main() {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const machine = {
     benchmark: 'juiceshop-recall',
+    tooling: toolingProvenance(),
     groundtruth: path.basename(gtPath),
     run: { runId: report.runId, status: report.status, score: report.score, url: report.url },
     params: { ...opts, skipScan: undefined },
@@ -330,7 +356,7 @@ async function main() {
   const mdPath = path.join(outDir, `${stamp}-recall.md`);
   writeFileSync(jsonPath, JSON.stringify(machine, null, 2) + '\n', 'utf8');
   writeFileSync(mdPath, renderMarkdown({
-    meta: { ...groundtruth.meta, ...machine.params }, result, report, elapsedMs,
+    meta: { ...groundtruth.meta, ...machine.params, tooling: machine.tooling }, result, report, elapsedMs,
     scored: result.scored, detected: result.detected, missed: result.missed,
     stale: result.stale, fpHits: result.fpHits, observational: result.observational,
   }), 'utf8');

@@ -23,6 +23,9 @@ inputs:
   ignore_file:
     description: 'Path to a waivers file (.qualitypilotignore.json shape) — suppressed findings stay visible but do not fail the gate'
     default: ''
+  authorized_target:
+    description: 'Authorize ACTIVE injection probing (SQLi + DOM-XSS differentials) on non-loopback preview targets. Loopback targets are always probed.'
+    default: 'false'
   timeout:
     description: 'Replay timeout in milliseconds'
     default: '600000'

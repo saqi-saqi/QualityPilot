@@ -301,7 +301,7 @@ qualitypilot check https://staging.example.com --baseline baseline.json --fail-o
 
 - **`authz` executor** — captured GET endpoints under an `/admin` namespace are re-requested anonymously; a 2xx answer is `authz-missing` (admin APIs must require an authenticated privileged session). Response bodies are deliberately not recorded (admin payloads may contain secrets). Non-admin endpoints (e.g. a `whoami` that returns an empty user anonymously) are correctly ignored.
 - **`--openapi <spec.yml|json>`** — replaces the inferred API surface with the spec's, deterministically: every path × method becomes an endpoint, query params and JSON bodies are materialized from the schema (examples > defaults > type dummies), and a relative `servers[0].url` resolves same-origin onto the target. Unreadable specs are usage errors (exit 64).
-- **`--login <recording>`** — replays a recorded login session (recorded via the dashboard) against the target: the crawl and browser cells run authenticated, and the API contract probes carry the session cookie. Sessions live encrypted in `data/sessions/`.
+- **`--login <recording>`** — replays a recorded login session (recorded via the dashboard) against the target: the crawl and browser cells run authenticated, and the API contract probes carry the session cookie. Sessions live encrypted in `data/sessions/`. If the named recording does not exist the run fails (exit 70) — it never silently falls back to an anonymous scan.
 
 ```bash
 qualitypilot check http://localhost:3000 --openapi swagger.yml --login juice-shop-cli
@@ -318,6 +318,8 @@ Safety model: probes run **by default on loopback targets only** (`localhost`, `
 
 ```bash
 qualitypilot check https://staging.example.com --authorized-target
+# plan replay (and the GitHub Action's `authorized_target` input) accepts the same flag:
+qualitypilot replay plan.json --url https://staging.example.com --authorized-target
 ```
 
 No `DROP`/stacked payloads exist; login sessions created by a probe die with the scan's browser context. On clean apps the probes stay silent (verified: authorized scan of the RealWorld Conduit demo → 0 injection findings).
@@ -329,7 +331,7 @@ Matrix cells run in parallel — browser cells share one browser process through
 qualitypilot check https://staging.example.com --concurrency 4   # 1–4, default 2
 ```
 
-Form fuzzing loads each page **once per target** (safe mode never submits, so there is no server traffic to pace) and re-navigates only after a thrown input, instead of re-navigating for every single input.
+Form fuzzing loads each page **once per target** (safe mode never submits, so there is no server traffic to pace) and re-navigates only after a thrown input, instead of re-navigating for every single input. Fuzz payload generators are non-destructive too — tautologies, clause closers and boundary values, no `DROP`, no stacked statements, and safe mode never submits the form.
 ### Job-summary markdown
 
 `--format markdown` renders a compact gate summary (verdict, severity counts, top rules, new-vs-baseline diff) for `$GITHUB_STEP_SUMMARY`, PR comments, or tickets:
@@ -370,7 +372,7 @@ The `report` markdown output doubles as a PR comment, and the SARIF file plugs i
 
 ```yaml
       - name: QualityPilot gate
-        uses: saqi-saqi/QualityPilot@v0.4.0
+        uses: saqi-saqi/QualityPilot@v0.5.0
         with:
           plan: qualitypilot/plan.json
           url: ${{ vars.PREVIEW_URL }}
@@ -406,14 +408,14 @@ The same advice applies to the `saqi-saqi/QualityPilot@v…` reference in your o
 
 We hold the scanner to the same bar it holds your app. Two proof artifacts ship in the repo and run on demand:
 
-- **Juice Shop recall harness** (`benchmark/run-recall-benchmark.mjs` + `benchmark/groundtruth-juiceshop.json`): runs the default full-surface `qualitypilot check` pipeline against a local OWASP Juice Shop v20.4.0 and scores it against a deterministic ground truth spanning five vulnerability classes (security headers, transport, SQL injection, DOM XSS, broken access control). Every expectation is **re-verified against the live target before scoring** (target drift cannot fake a number), and known false-positive modes are asserted as must-not-find rules. Current recorded receipt: **10/10 expectations detected (100% recall), 0 false-positive-guard violations, 301s** (2026-11-17). Curated receipts are committed under [`benchmark/receipts/`](benchmark/receipts/) (scratch output stays in the ignored `benchmark/results/`), and the nightly benchmark job re-verifies all of it.
+- **Juice Shop recall harness** (`benchmark/run-recall-benchmark.mjs` + `benchmark/groundtruth-juiceshop.json`): runs the default full-surface `qualitypilot check` pipeline against a local OWASP Juice Shop v20.4.0 and scores it against a deterministic ground truth spanning five vulnerability classes (security headers, transport, SQL injection, DOM XSS, broken access control). Every expectation is **re-verified against the live target before scoring** (target drift cannot fake a number), and known false-positive modes are asserted as must-not-find rules. Current recorded receipt: **10/10 expectations detected (100% recall), 0 false-positive-guard violations, 183s** (2026-11-19, qualitypilot@0.4.0 — see [`benchmark/receipts/2026-11-19-juiceshop-recall.md`](benchmark/receipts/2026-11-19-juiceshop-recall.md)). Curated receipts are committed under [`benchmark/receipts/`](benchmark/receipts/) (scratch output stays in the ignored `benchmark/results/`), and the nightly benchmark job re-verifies all of it.
 - **RealWorld/Conduit false-positive triage**: the same pipeline against the official RealWorld Conduit demo, with every finding classified true/false positive against the [documented Conduit API spec](https://github.com/gothinkster/realworld/blob/main/specs/api/openapi.yml) (401/404/409/422 are spec-defined responses, not defects). The classification receipt is published under [`benchmark/receipts/`](benchmark/receipts/).
 
 Methodology notes: only deterministic expectations score recall — crawl-state-dependent detectors (axe, console, links) are reported as observational context; the benchmark measures exactly what a user gets from the default executor list, no special benchmark mode.
 
 A product landing page ships in [`landing/`](landing/index.html) — a single static file, deployable anywhere.
 
-**Latest receipt:** 10/10 expectations detected on 2026-11-17 (local run `run_matrix_1794919896148_13c17c25`, 0 false-positive-guard violations, 301s). The nightly benchmark job re-verifies this on every run — a recall regression fails the build, and the badge above turns red. Run your own numbers: `node benchmark/run-recall-benchmark.mjs --base-url <juice-shop-url> --min-recall 1.0`.
+**Latest receipt:** 10/10 expectations detected on 2026-11-19 (run `run_matrix_1795076779880_ba4b4d0f`, qualitypilot@0.4.0, 0 false-positive-guard violations, 183s). New receipts record the QualityPilot version and git commit they ran at (the two 2026-11-19 receipts predate provenance capture and say so explicitly). The nightly benchmark job re-verifies this on every run — a recall regression fails the build, and the badge above turns red. Run your own numbers: `node benchmark/run-recall-benchmark.mjs --base-url <juice-shop-url> --min-recall 1.0`.
 
 ---
 ## GitHub Action
@@ -433,7 +435,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Replay QualityPilot plan
-        uses: saqi-saqi/QualityPilot@v0.4.0
+        uses: saqi-saqi/QualityPilot@v0.5.0
         with:
           plan: qualitypilot/plan.json
           url: ${{ secrets.PREVIEW_URL }}
@@ -447,7 +449,9 @@ The action runs the exported plan without an LLM key, writes a summary to the Gi
 qualitypilot export plan.json --format plan --out qualitypilot
 ```
 
-Use a release tag such as `v0.4.0` in production workflows so upgrades are deliberate.
+Use a release tag such as `v0.5.0` in production workflows so upgrades are deliberate.
+
+Action inputs: `plan`, `url`, `fail_on`, `min_score`, `max_pages` (caps the plan's page set), `timeout` (hard replay deadline — a hung replay exits 70), `ignore_file` (waivers), and `authorized_target` (`true` authorizes active injection probes on non-loopback preview targets; loopback targets are always probed). A replay whose matrix cells fail, or that hits its deadline, exits 70 — it can never report a green gate without having executed the plan.
 
 ---
 ## 📦 Export Your Tests
@@ -531,7 +535,7 @@ QualityPilot has a comprehensive unit and integration test suite:
 npm test                            # full suite (1,000+ tests)
 node scripts/run-tests.mjs cli      # subset: pass a path fragment (e.g. cli, fuzz, matrix)
 ```
-All **1,000+ tests** (230 suites) run via Node.js native test runner in ~2 minutes, with zero test-framework dependencies — the runner ships with every supported Node version (22.19+). The suite covers the CLI gate and exit codes, the execution matrix and classifier, every executor (including the injection differential engine), report invariants, SSRF validation, and the recall-harness scoring logic.
+All **1,100+ tests** (240 suites) run via Node.js native test runner in ~2 minutes, with zero test-framework dependencies — the runner ships with every supported Node version (22.19+). The suite covers the CLI gate and exit codes, the execution matrix and classifier, every executor (including the injection differential engine), report invariants, SSRF validation, and the recall-harness scoring logic.
 
 ---
 

@@ -1,5 +1,11 @@
 {
   "benchmark": "juiceshop-recall",
+  "tooling": {
+    "version": "0.4.0",
+    "commit": null,
+    "dirty": null,
+    "note": "Commit was not captured at run time (the harness predates audit M-8 provenance capture). The run happened 2026-11-19 13:29, between commits 113f588 (13:12) and 2a5956d (13:35); the SHA is left null rather than guessed."
+  },
   "groundtruth": "groundtruth-juiceshop.json",
   "run": {
     "runId": "run_matrix_1795076779880_ba4b4d0f",

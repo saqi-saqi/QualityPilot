@@ -1,6 +1,6 @@
 {
   "name": "qualitypilot",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "description": "QualityPilot - Autonomous software QA agent: explores, plans, and executes comprehensive web + API test suites",
   "license": "Apache-2.0",
