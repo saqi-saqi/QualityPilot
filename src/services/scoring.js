@@ -132,11 +132,15 @@ export function calculateScore(findings, options = {}) {
       continue;
     }
 
-    const base = severityBase[finding.severity] || 0;
+    // Audit L-5: factory-produced severities are lowercase, but persisted
+    // runs, hand-written plans and LLM-inferred expectations are not. A
+    // case-sensitive key silently deducted 0 for 'Medium'.
+    const severityKey = String(finding.severity || '').toLowerCase();
+    const base = severityBase[severityKey] || 0;
     
     // Default multipliers if unexpected value is present
-    const confMult = confidenceMultiplier[finding.confidence] ?? 1.0;
-    let typeMult = findingTypeMultiplier[finding.findingType] ?? 1.0;
+    const confMult = confidenceMultiplier[String(finding.confidence || '').toLowerCase()] ?? 1.0;
+    let typeMult = findingTypeMultiplier[String(finding.findingType || '').toLowerCase()] ?? 1.0;
     // In aggressive detection mode (!excludeUnauth), unauthenticated probe findings
     // are penalized as defects rather than ignored as environmental
     if (!excludeUnauth && isUnauthenticatedProbe(finding) && typeMult === 0) {
@@ -232,8 +236,9 @@ export function summarizeFindings(findings, pages, options = {}) {
     // excluded unauthenticated probes are infrastructure noise, not content
     // defects, so they stay out of bySeverity too. Invariant: the sum of
     // bySeverity always equals totalFindings.
-    if (!isCoverage && !isUnauth && !isEnvironmental && finding.severity && summary.bySeverity.hasOwnProperty(finding.severity)) {
-      summary.bySeverity[finding.severity]++;
+    if (!isCoverage && !isUnauth && !isEnvironmental && finding.severity
+        && summary.bySeverity.hasOwnProperty(String(finding.severity).toLowerCase())) {
+      summary.bySeverity[String(finding.severity).toLowerCase()]++;
     }
 
     // Category count
@@ -242,13 +247,13 @@ export function summarizeFindings(findings, pages, options = {}) {
     }
 
     // Confidence count
-    if (finding.confidence && summary.byConfidence.hasOwnProperty(finding.confidence)) {
-      summary.byConfidence[finding.confidence]++;
+    if (finding.confidence && summary.byConfidence.hasOwnProperty(String(finding.confidence).toLowerCase())) {
+      summary.byConfidence[String(finding.confidence).toLowerCase()]++;
     }
 
     // FindingType count
-    if (finding.findingType && summary.byFindingType.hasOwnProperty(finding.findingType)) {
-      summary.byFindingType[finding.findingType]++;
+    if (finding.findingType && summary.byFindingType.hasOwnProperty(String(finding.findingType).toLowerCase())) {
+      summary.byFindingType[String(finding.findingType).toLowerCase()]++;
     }
 
     // Origin count
