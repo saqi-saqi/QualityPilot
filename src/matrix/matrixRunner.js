@@ -372,6 +372,13 @@ export async function runMatrix({
     screenshotsDir: options.screenshotsDir || '/tmp/screenshots',
     evidenceDir: options.evidenceDir || '',
     runId: options.runId || `run_${Date.now()}`,
+    // Page-scoped site executors (legacy-links/console/network/…) read the
+    // crawled records and the site origin (audit M-3 — these executors were
+    // scheduled into cells but received no page data before).
+    pages: Array.isArray(options.pages) ? options.pages : (Array.isArray(plan?.pages) ? plan.pages : []),
+    siteOrigin: options.siteOrigin || (() => {
+      try { return new URL(plan?.targetUrl || '').origin; } catch { return null; }
+    })(),
   };
 
   const matrixStart = Date.now();

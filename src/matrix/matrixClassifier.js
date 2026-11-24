@@ -91,6 +91,14 @@ export function pageScopeAgreement({ findings, coveredPages = [], options = {} }
   const healthy = covered.filter((u) => !failingUrls.has(u));
   if (healthy.length === 0) return { findings, promoted }; // site-wide — stays environmental
 
+  // Audit L-9: mirror promotePageLoadFailures' guardrails — promoting an
+  // isolated failure to a BUG needs a real healthy majority (≥3 covered pages
+  // and failing pages a minority). A 2-page scan with one timeout is too
+  // little evidence to call it an app defect.
+  if (covered.length < 3 || failingUrls.size > healthy.length) {
+    return { findings, promoted };
+  }
+
   for (const f of envFindings) {
     if (f.findingType !== 'environmental') continue;
     f.findingType = 'bug';

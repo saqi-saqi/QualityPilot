@@ -18,14 +18,35 @@
  *       (flows target user interactions, not layouts)
  *   • accessibility-deep, perf, visual : browser + viewport + role all needed
  *       (these check layout-dependent issues)
+ *   • legacy-links/console/network/accessibility/seo/performance : page-scoped,
+ *       no browser — ONE site-wide cell per run (running them per role would
+ *       repeat identical work over the same crawled page set)
+ *   • legacy-workflows : needs a BrowserContext (user-authored workflows), so
+ *       it rides the browser-only cells like e2e
  *
- * The matrix is "full" per the user's "check each and every thing" requirement
- * — every (browser, viewport, role) combination is exercised.
+ * Unknown executor names are a hard error (audit M-3): they used to produce
+ * no cell at all, so a plan could list a detector that never ran and still
+ * report a green, 100/100 run. The matrix is "full" per the user's "check
+ * each and every thing" requirement — every (browser, viewport, role)
+ * combination is exercised.
  */
 
 const NO_BROWSER_EXECUTORS = new Set(['api-contract', 'security', 'authz']);
 const BROWSER_VIEWPORT_EXECUTORS = new Set(['accessibility-deep', 'perf', 'visual']);
-const BROWSER_ONLY_EXECUTORS = new Set(['e2e', 'injection']);
+const BROWSER_ONLY_EXECUTORS = new Set(['e2e', 'injection', 'legacy-workflows']);
+/** Page-scoped site executors — one no-browser cell per run (see above). */
+const SITE_WIDE_EXECUTORS = new Set([
+  'legacy-links', 'legacy-console', 'legacy-network',
+  'legacy-accessibility', 'legacy-seo', 'legacy-performance',
+]);
+
+const KNOWN_EXECUTORS = new Set([
+  ...NO_BROWSER_EXECUTORS,
+  ...BROWSER_VIEWPORT_EXECUTORS,
+  ...BROWSER_ONLY_EXECUTORS,
+  ...SITE_WIDE_EXECUTORS,
+  'fuzz',
+]);
 
 /**
  * Build the execution matrix for a plan.
@@ -52,10 +73,33 @@ export function planMatrix(plan, roles = null) {
   const executors = plan.executors?.length ? plan.executors : [];
   const hasFormFuzzTargets = (plan.fuzzTargets || []).some(target => target.pageUrl && target.fieldSelector);
 
+  // Audit M-3: an unknown name used to match none of the sets below and
+  // silently produce no cell — the plan ran "zero cells" and reported PASS.
+  const unknown = [...new Set(executors.filter((e) => !KNOWN_EXECUTORS.has(e)))];
+  if (unknown.length > 0) {
+    throw new Error(
+      `Unknown executor name(s): ${unknown.join(', ')} — they would produce no matrix cell and silently never run. ` +
+      `Known executors: ${[...KNOWN_EXECUTORS].sort().join(', ')}`,
+    );
+  }
+
   // Resolve roles: anon is always present; pull others from auth flows
   const finalRoles = roles || resolveDefaultRoles(plan);
 
   const cells = [];
+
+  // 0. Page-scoped site executors — one no-browser cell per run.
+  const siteWideExecs = executors.filter(e => SITE_WIDE_EXECUTORS.has(e));
+  if (siteWideExecs.length > 0) {
+    cells.push({
+      id: 'no-browser::site',
+      browser: null,
+      viewport: null,
+      role: 'anon',
+      executors: siteWideExecs,
+      needsBrowser: false,
+    });
+  }
 
   // 1. No-browser executors — run once per role, regardless of browser/viewport
   const noBrowserExecs = executors.filter(e => NO_BROWSER_EXECUTORS.has(e) || (e === 'fuzz' && !hasFormFuzzTargets));

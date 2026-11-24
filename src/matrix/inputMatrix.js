@@ -53,7 +53,10 @@ const GENERATOR_VALUES = {
   empty: [''],
   oversize: ['A'.repeat(10_000), 'A'.repeat(1000), 'A'.repeat(100)],
   unicode: ['¹²³üñîçødé Ω≈ç√∫˜µ', '🎉🚀💻✨', 'مرحبا بالعالم', 'こんにちは世界'],
-  sql: ["' OR '1'='1", "'; DROP TABLE users; --", "' UNION SELECT * FROM users--", "admin'--"],
+  // Audit M-4: non-destructive only — no DROP/stacked/UNION payloads. These
+  // match the executor's generator set (src/executors/fuzz.js); this module
+  // only counts them, but the values must not advertise destructive probes.
+  sql: ["' OR '1'='1", "' OR 1=1--", "' AND 1=2--", "admin'--"],
   xss: ['<script>alert(1)</script>', '"><svg onload=alert(1)>', 'javascript:alert(1)'],
   path: ['../../../etc/passwd', '..\\..\\..\\windows\\system32', '%2e%2e%2f%2e%2e%2f'],
   'null-byte': ['foo\0bar', '\0', 'value\0\0extra'],
