@@ -36,9 +36,12 @@ function esc(value) {
 }
 
 /** A finding is "skipped" (not a hard failure) when it is a coverage
- *  failure record or only suspected. */
+ *  failure record, only suspected, or waived by the team's waiver file.
+ *  Audit M-2: waived findings stayed <failure> while the gate exited 0 — the
+ *  XML artifact and the verdict disagreed. */
 function isSkipped(finding) {
-  return finding.findingType === 'coverage-failure' ||
+  return finding.waived === true ||
+         finding.findingType === 'coverage-failure' ||
          finding.category === 'Scan Coverage' ||
          finding.confidence === 'suspected';
 }
@@ -63,9 +66,11 @@ function testcaseXml(finding, seen) {
   const skipped = isSkipped(finding);
 
   if (skipped) {
-    const type = finding.findingType === 'coverage-failure' || finding.category === 'Scan Coverage'
-      ? 'coverage-failure'
-      : 'suspected';
+    const type = finding.waived === true
+      ? 'waived'
+      : finding.findingType === 'coverage-failure' || finding.category === 'Scan Coverage'
+        ? 'coverage-failure'
+        : 'suspected';
     const message = finding.title || finding.description || 'Skipped';
     return `    <testcase name="${name}" classname="${classname}">\n` +
            `      <skipped message="${esc(message)}" type="${type}"/>\n` +

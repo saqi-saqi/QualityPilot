@@ -74,6 +74,12 @@ export function toSarif(report) {
         },
       }];
     }
+    // Audit M-2 (SARIF parity): a waived finding is still reported, but
+    // marked suppressed so code scanning does not raise an alert the gate
+    // deliberately accepted.
+    if (f.waived === true) {
+      result.suppressions = [{ kind: 'external', justification: 'waived in the team waiver file' }];
+    }
     return result;
   });
 
