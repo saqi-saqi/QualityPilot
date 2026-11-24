@@ -26,9 +26,9 @@ export const generators = {
   unicode: () => '¹²³üñîçødé Ω≈ç√∫˜µ åß∂ƒ©˙∆∆',
   sql: () => [
     "' OR '1'='1",
-    "'; DROP TABLE users; --",
+    "' OR 1=1--",
     "admin'--",
-    "' UNION SELECT * FROM users--",
+    "' AND 1=2--",
   ],
   xss: () => [
     '<script>alert(1)</script>',

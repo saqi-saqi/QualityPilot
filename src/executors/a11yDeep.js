@@ -5,11 +5,13 @@
  * Produces: findings per axe-core violation (one finding per rule × element)
  *
  * Requires Playwright BrowserContext. Uses axe-core injected into the page.
- * Falls back gracefully if axe-core isn't available.
  *
- * axe-core is injected from the local node_modules install (bundled via
- * @axe-core/playwright). Local file injection bypasses site CSP, which the
- * CDN URL approach could not (e.g. facebook.com blocks unpkg.com).
+ * axe-core is injected ONLY from the local node_modules install (bundled via
+ * @axe-core/playwright). Local file injection bypasses site CSP, and it keeps
+ * a scanned page from executing third-party CDN code (audit L-2 — the old
+ * remote-script fallback was a supply-chain hole with no integrity pin). When
+ * the local package is missing the scan is skipped with an environmental
+ * finding.
  */
 
 import { existsSync } from 'node:fs';
@@ -152,15 +154,26 @@ export default async function a11yDeepExecutor(ctx) {
     try {
       await page.goto(pageInfo.url, { waitUntil: 'load', timeout: config?.pageTimeoutMs || 30000 });
 
-      // Inject axe-core from the local install (CSP-safe). Fall back to the
-      // CDN only if the local package is missing. Skip if both fail.
+      // Inject axe-core from the local install (CSP-safe). The old fallback
+      // loaded the script from a public CDN — removed (audit L-2).
       const localAxePath = resolveLocalAxePath();
       try {
-        if (localAxePath) {
-          await page.addScriptTag({ path: localAxePath });
-        } else {
-          await page.addScriptTag({ url: 'https://unpkg.com/axe-core@4.10.0/axe.min.js' });
+        if (!localAxePath) {
+          findings.push(ctx.createFinding({
+            title: 'a11y-deep: axe-core is not installed locally',
+            severity: 'low',
+            confidence: 'high',
+            category: 'accessibility',
+            findingType: 'environmental',
+            origin: 'first-party',
+            ruleId: 'axe-local-missing',
+            pageUrl: pageInfo.url,
+            description: 'axe-core was not found in node_modules. Loading it from a CDN would execute third-party code inside the scanned page, so the deep accessibility scan is skipped instead.',
+            suggestedFix: 'Install the full dependency set (`npm ci`) so axe-core is available locally.',
+          }));
+          continue;
         }
+        await page.addScriptTag({ path: localAxePath });
       } catch (injectionErr) {
         findings.push(ctx.createFinding({
           title: 'a11y-deep: failed to inject axe-core',

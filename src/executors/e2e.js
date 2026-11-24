@@ -595,7 +595,13 @@ export default async function e2eExecutor(ctx) {
     // Pick a viewport for this flow if specified
     const viewport = flow.viewport || ctx.plan.viewports?.[0] || { width: 1280, height: 720 };
 
-    const page = await ctx.context.newPage({ viewport });
+    const page = await ctx.context.newPage();
+    // Audit L-1: BrowserContext.newPage() takes no viewport argument — the
+    // flow's viewport was silently ignored and every flow ran at the
+    // context default. Set it explicitly after the page opens.
+    if (viewport && typeof page.setViewportSize === 'function') {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height }).catch(() => {});
+    }
 
     try {
       const result = await runFlow(flow, page, {

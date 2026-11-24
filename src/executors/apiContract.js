@@ -18,8 +18,21 @@
 
 import { safeFetch } from '../services/ssrf.js';
 import { config } from '../utils/config.js';
+import { scrubText } from '../mcp/redact.js';
 
 const DEFAULT_TIMEOUT_MS = 15000;
+
+/**
+ * Response preview for FINDING EVIDENCE. Evidence is copied into reports and
+ * issue-tracker bodies, so credential-shaped material (session cookies, CSRF
+ * tokens, JWTs) is scrubbed and the body is truncated (audit H-3).
+ */
+function previewBody(body, maxChars = 500) {
+  if (body == null) return '';
+  let text;
+  try { text = typeof body === 'string' ? body : (JSON.stringify(body) ?? ''); } catch { text = String(body); }
+  return scrubText(text.slice(0, maxChars));
+}
 
 /** Build a fetch with timeout via AbortController */
 function withTimeout(fetchImpl, ms, externalSignal) {
@@ -262,7 +275,10 @@ export async function probeEndpoint(endpoint, ctx) {
       //   • matchesObservation — the real browser also received this status
       //   • wafBlocked       — a WAF/Cloudflare challenge page blocked the probe
       const sessionGated = endpoint.requiresSession === true;
-      const nonGetReplay = endpoint.method !== 'GET';
+      // Audit L-6: a non-GET replay without cookies/CSRF may legitimately
+      // answer 401/403 — but a 5xx is still a real server signal and must
+      // not be downgraded merely because the method is POST.
+      const nonGetReplay = endpoint.method !== 'GET' && status >= 400 && status < 500;
       const matchesObservation = Array.isArray(endpoint.observedStatuses)
         && endpoint.observedStatuses.includes(status);
       const wafBlocked = (status === 403 || status === 503)
@@ -291,7 +307,7 @@ export async function probeEndpoint(endpoint, ctx) {
               : anonymousReplay
                 ? `Expected status ${endpoint.expectedStatus} but got ${status}. The probe replayed a captured ${endpoint.method} request anonymously${sessionGated ? ' (the original request carried session credentials)' : ''} — the endpoint may simply require a session or CSRF token.`
                 : `Expected status ${endpoint.expectedStatus} but got ${status}.`,
-          evidence: `Endpoint: ${endpoint.method} ${endpoint.path}\nURL: ${url}\nStatus: ${status}\nResponse: ${typeof body === 'string' ? body.slice(0, 500) : JSON.stringify(body).slice(0, 500)}`,
+          evidence: `Endpoint: ${endpoint.method} ${endpoint.path}\nURL: ${url}\nStatus: ${status}\nResponse: ${previewBody(body)}`,
           suggestedFix: downgraded
             ? reason === 'waf'
               ? 'No action needed — this is the site\'s bot protection. If the endpoint must be probed, allow-list the scanner or use a browser-context probe.'
@@ -326,7 +342,7 @@ export async function probeEndpoint(endpoint, ctx) {
             description: gated
               ? `Response body does not match the expected schema: ${result.mismatches.join('; ')}. The replay got an empty/blocked response — it may be bot-walled or session-gated; verify manually.`
               : `Response body does not match the expected schema: ${result.mismatches.join('; ')}`,
-            evidence: `Expected: ${JSON.stringify(endpoint.responseSchema)}\nActual: ${JSON.stringify(body).slice(0, 500)}`,
+            evidence: `Expected: ${JSON.stringify(endpoint.responseSchema)}\nActual: ${previewBody(body)}`,
             suggestedFix: gated
               ? 'Re-check with a real session or browser context; if the shape still differs, update the contract.'
               : 'Either fix the API to return the documented shape or update the contract.',

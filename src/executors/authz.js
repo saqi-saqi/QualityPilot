@@ -43,6 +43,10 @@ export default async function authzExecutor(ctx) {
     ctx.onEvent?.('authz complete: no admin-namespaced endpoints captured');
     return { findings, stats };
   }
+  if (endpoints.length > MAX_ENDPOINTS) {
+    // Audit L-7: the cap is a latency guard, but truncation must be visible.
+    ctx.onEvent?.(`authz: probing the first ${MAX_ENDPOINTS} of ${endpoints.length} admin endpoints (cap)`);
+  }
 
   // Transport (audit L-3): strict mode → safeFetch (every redirect hop
   // SSRF-re-validated); dev mode (per-run allowPrivateTargets option or env
@@ -54,7 +58,13 @@ export default async function authzExecutor(ctx) {
   for (const endpoint of endpoints.slice(0, MAX_ENDPOINTS)) {
     if (ctx.signal?.aborted) break;
     const base = originOf(endpoint.baseUrl || targetUrl);
-    if (!base || !fetchImpl) break;
+    // Audit L-7: one endpoint with an unusable baseUrl used to break the
+    // whole loop (every later admin endpoint went unprobed). Skip it instead.
+    if (!base || !fetchImpl) {
+      stats.skippedNoBase = (stats.skippedNoBase || 0) + 1;
+      ctx.onEvent?.(`authz: skipped ${endpoint.path} — no usable origin`);
+      continue;
+    }
 
     const qs = Object.keys(endpoint.queryParams || {}).length
       ? '?' + new URLSearchParams(endpoint.queryParams).toString()

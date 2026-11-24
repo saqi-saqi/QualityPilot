@@ -467,7 +467,12 @@ export default async function visualExecutor(ctx) {
       continue;
     }
 
-    const page = await ctx.context.newPage({ viewport: baseline.viewport });
+    const page = await ctx.context.newPage();
+    // Audit L-1 (same defect as e2e): BrowserContext.newPage() takes no
+    // viewport argument — apply the baseline viewport explicitly.
+    if (baseline.viewport && typeof page.setViewportSize === 'function') {
+      await page.setViewportSize({ width: baseline.viewport.width, height: baseline.viewport.height }).catch(() => {});
+    }
     try {
       const { buffer, filepath, hash } = await captureScreenshot(
         page, baseline, ctx.screenshotsDir, ctx.runId

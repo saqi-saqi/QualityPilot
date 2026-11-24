@@ -95,6 +95,17 @@ const HEADER_RULES = [
 
 // ─── cookie rules ────────────────────────────────────────────────────
 
+/**
+ * Show a Set-Cookie header WITHOUT its value: `session=[REDACTED]; Path=/;
+ * HttpOnly`. Cookie values are credentials — they must not be embedded in
+ * finding descriptions that flow into reports and issue-tracker bodies
+ * (audit H-3). The audit still sees the name + flags, which is what the
+ * rules judge.
+ */
+export function redactCookieValue(cookieStr) {
+  return String(cookieStr || '').replace(/^(\s*[^=;,\s]+)\s*=\s*[^;]*/, '$1=[REDACTED]');
+}
+
 export function analyzeCookie(cookieStr, pageUrl) {
   const issues = [];
   const parts = cookieStr.split(';').map(s => s.trim());
@@ -318,6 +329,7 @@ export async function probeSecurityHeaders(pageUrl, ctx) {
 export default async function securityExecutor(ctx) {
   const pages = ctx.plan?.pages || [];
   const findings = [];
+  let probeFailures = 0;
 
   ctx.onEvent?.(`Auditing security headers for ${pages.length} pages`);
 
@@ -333,7 +345,10 @@ export default async function securityExecutor(ctx) {
     const isHttps = /^https:/i.test(url);
     const probe = await probeSecurityHeaders(url, ctx);
     if (!probe.ok) {
-      // Network failure — already flagged by crawler; skip
+      // Audit M-6: a failed probe used to vanish silently while pagesAudited
+      // still counted the page. Surface it and count only audited pages.
+      probeFailures++;
+      ctx.onEvent?.(`security header probe failed for ${url}: ${probe.error || 'unknown error'}`);
       continue;
     }
 
@@ -405,7 +420,7 @@ export default async function securityExecutor(ctx) {
           origin: 'first-party',
           ruleId: issue.ruleId,
           pageUrl: url,
-          description: `Cookie: ${cookie}`,
+          description: `Cookie: ${redactCookieValue(cookie)}`,
           suggestedFix: issue.fix,
         }));
       }
@@ -435,7 +450,8 @@ export default async function securityExecutor(ctx) {
   return {
     findings: rolled,
     stats: {
-      pagesAudited: urls.size,
+      pagesAudited: urls.size - probeFailures,
+      pagesProbeFailed: probeFailures,
       headerFindings: rolled.filter(f => f.ruleId?.startsWith('header-')).length,
       cookieFindings: rolled.filter(f => f.ruleId?.startsWith('cookie-')).length,
       mixedContentFindings: rolled.filter(f => f.ruleId?.startsWith('mixed-content')).length,

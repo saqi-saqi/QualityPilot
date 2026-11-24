@@ -349,28 +349,49 @@ export default async function injectionExecutor(ctx) {
   // ─── C. Search-route DOM sink probe ─────────────────────────────────
   const searchEndpoint = (plan.apiEndpoints || []).find((e) => /search|query/i.test(String(e.path || '')));
   if (ctx.context && searchEndpoint && !ctx.signal?.aborted) {
-    const page = await ctx.context.newPage();
-    try {
-      stats.searchDomProbed = true;
-      const route = `${targetUrl.replace(/\/$/, '')}/#/search?q=${encodeURIComponent(DOM_XSS_PAYLOAD)}`;
-      await page.goto(route, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
-      // Poll up to ~6s for the SPA render — a single fixed wait is flaky when
-      // the machine is loaded (Phase 9 acceptance: one run missed the
-      // reflection entirely with a single 2.5s wait).
-      let reflected = false;
-      for (let attempt = 0; attempt < 12 && !reflected && !ctx.signal?.aborted; attempt++) {
-        await page.waitForTimeout(500);
-        reflected = await page.evaluate(
-          (marker) => document.documentElement.innerHTML.includes(marker),
-          DOM_XSS_MARKER,
-        );
-      }
-      if (reflected) {
-        const snippet = await page.evaluate((marker) => {
-          const html = document.documentElement.innerHTML;
-          const idx = html.indexOf(marker);
-          return html.slice(Math.max(0, idx - 120), idx + 80);
-        }, DOM_XSS_MARKER);
+    // Audit L-8: the probe only knew the hash route (Juice Shop's SPA shape),
+    // so path-routed/SSR apps were never probed. Try the SPA hash route AND
+    // the captured search endpoint itself; stop at the first reflection.
+    const candidateRoutes = [`${targetUrl.replace(/\/$/, '')}/#/search?q=${encodeURIComponent(DOM_XSS_PAYLOAD)}`];
+    const searchOrigin = originOf(targetUrl);
+    if (searchOrigin && searchEndpoint.path) {
+      const serverRoute = `${searchOrigin}${searchEndpoint.path}?q=${encodeURIComponent(DOM_XSS_PAYLOAD)}`;
+      if (!candidateRoutes.includes(serverRoute)) candidateRoutes.push(serverRoute);
+    }
+
+    for (const route of candidateRoutes) {
+      if (ctx.signal?.aborted) break;
+      const page = await ctx.context.newPage();
+      try {
+        stats.searchDomProbed = true;
+        let reflected = false;
+        try {
+          await page.goto(route, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+          // Poll up to ~6s for the SPA render — a single fixed wait is flaky when
+          // the machine is loaded (Phase 9 acceptance: one run missed the
+          // reflection entirely with a single 2.5s wait).
+          for (let attempt = 0; attempt < 12 && !reflected && !ctx.signal?.aborted; attempt++) {
+            await page.waitForTimeout(500);
+            reflected = await page.evaluate(
+              (marker) => document.documentElement.innerHTML.includes(marker),
+              DOM_XSS_MARKER,
+            );
+          }
+        } catch {
+          /* route never rendered — try the next candidate */
+        }
+        if (!reflected) continue;
+
+        let snippet = '';
+        try {
+          snippet = await page.evaluate((marker) => {
+            const html = document.documentElement.innerHTML;
+            const idx = html.indexOf(marker);
+            return html.slice(Math.max(0, idx - 120), idx + 80);
+          }, DOM_XSS_MARKER);
+        } catch {
+          /* page went away before the snippet could be read */
+        }
         findings.push(ctx.createFinding({
           title: `DOM XSS: search query reflected into executable markup (${searchEndpoint.path})`,
           severity: 'high',
@@ -384,11 +405,10 @@ export default async function injectionExecutor(ctx) {
           evidence: `DOM around the sink: ${snippet}`,
           suggestedFix: 'Render the query with textContent (or HTML-escape it) — never interpolate raw user input into innerHTML.',
         }));
+        break; // first reflecting route wins — one finding per run
+      } finally {
+        await page.close().catch(() => {});
       }
-    } catch {
-      /* render never completed — no finding */
-    } finally {
-      await page.close().catch(() => {});
     }
   }
 
