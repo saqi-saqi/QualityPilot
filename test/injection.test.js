@@ -354,6 +354,31 @@ describe('injection executor — search-route DOM sink', () => {
     assert.match(f.evidence, /DOM around the sink/);
   });
 
+  it('falls back to the captured search endpoint for path-routed/SSR apps (audit L-8)', async () => {
+    const calls = { routes: [] };
+    const page = {
+      on() {},
+      async goto(route) { calls.routes.push(route); },
+      async evaluate() {
+        const route = calls.routes[calls.routes.length - 1] || '';
+        return route.includes('/rest/products/search'); // only the server route reflects
+      },
+      async waitForTimeout() {},
+      async close() {},
+    };
+    const plan = {
+      targetUrl: 'http://localhost:3000',
+      apiEndpoints: [{ method: 'GET', path: '/rest/products/search', queryParams: { q: '' } }],
+      fuzzTargets: [],
+    };
+    const result = await injectionExecutor(makeCtx({ context: { async newPage() { return page; } }, plan }));
+    assert.equal(calls.routes.length, 2, 'hash route first, then the captured search endpoint');
+    assert.ok(calls.routes[1].startsWith('http://localhost:3000/rest/products/search?q='));
+    const f = result.findings.find((x) => x.ruleId === 'injection-xss-dom');
+    assert.ok(f, 'reflection on the path-routed search page is reported');
+    assert.ok(f.pageUrl.endsWith('/rest/products/search'));
+  });
+
   it('stays silent when the payload does NOT become live markup (escaped rendering)', async () => {
     const mock = makeDomMock({ reflected: false });
     const result = await injectionExecutor(makeCtx({ ...mock.ctx, plan: mock.plan }));

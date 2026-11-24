@@ -147,6 +147,22 @@ describe('toJUnitXml', () => {
     assert.ok(xml.includes('2.1 &lt; 4.5 &amp; fails WCAG AA'));
   });
 
+  it('renders waived findings as <skipped type="waived"> — the artifact must agree with an exit-0 gate (audit M-2)', () => {
+    const run = {
+      runId: 'r-waived',
+      score: 100,
+      findings: [
+        { ruleId: 'header-referrer-policy', pageUrl: 'https://x.com/', severity: 'low', confidence: 'confirmed', findingType: 'bug', category: 'network', title: 'Missing referrer-policy', waived: true },
+        { ruleId: 'broken-link', pageUrl: 'https://x.com/', severity: 'high', confidence: 'confirmed', findingType: 'bug', category: 'links', title: 'Broken link' },
+      ],
+    };
+    const xml = toJUnitXml(run);
+    assertXmlWellFormed(xml);
+    assert.ok(xml.includes('skipped="1"'), 'waived finding is skipped, not a failure');
+    assert.ok(xml.includes('failures="1"'), 'only the unwaived finding fails');
+    assert.match(xml, /<skipped message="Missing referrer-policy" type="waived"\/>/);
+  });
+
   it('handles empty findings gracefully', () => {
     const xml = toJUnitXml({ runId: 'r1', score: 100, findings: [] });
     assertXmlWellFormed(xml);
@@ -230,6 +246,19 @@ describe('toSarif', () => {
     const sarif = toSarif(sampleRun);
     const r = sarif.runs[0].results[1]; // axe-color-contrast
     assert.match(r.partialFingerprints.signature, /^axe-color-contrast::https:\/\/example\.com\/pricing::/);
+  });
+
+  it('marks waived results as suppressed so code scanning does not alert on an accepted risk (audit M-2)', () => {
+    const sarif = toSarif({
+      runId: 'r',
+      findings: [
+        { ruleId: 'a', severity: 'low', title: 'A', pageUrl: 'https://x.com/', waived: true },
+        { ruleId: 'b', severity: 'high', title: 'B', pageUrl: 'https://x.com/' },
+      ],
+    });
+    const [waived, open] = sarif.runs[0].results;
+    assert.deepEqual(waived.suppressions, [{ kind: 'external', justification: 'waived in the team waiver file' }]);
+    assert.equal(open.suppressions, undefined);
   });
 
   it('serializes to JSON cleanly (JSON round-trip)', () => {

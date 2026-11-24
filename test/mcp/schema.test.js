@@ -273,3 +273,13 @@ describe('redaction layer', () => {
     assert.doesNotMatch(out, /\n {4}at /);
   });
 });
+
+// ─── SSRF pin parity (audit L-4) ─────────────────────────────────────
+
+describe('MCP quick-check browser pin', () => {
+  it('passes --host-resolver-rules for a validated pin and nothing otherwise', async () => {
+    const { browserLaunchArgs } = await import('../../src/mcp/scanEngine.js');
+    assert.deepEqual(browserLaunchArgs('MAP example.com 93.184.216.34'), ['--host-resolver-rules=MAP example.com 93.184.216.34']);
+    assert.deepEqual(browserLaunchArgs(null), []);
+  });
+});

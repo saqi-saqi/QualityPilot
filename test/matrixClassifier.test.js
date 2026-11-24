@@ -59,6 +59,23 @@ describe('matrixClassifier — pageScopeAgreement (step 2)', () => {
     assert.equal(f.findingType, 'environmental');
   });
 
+  it('requires a healthy majority — a 2-page scan with one timeout is not proof of an app bug (audit L-9)', () => {
+    const f = mkFinding({ findingType: 'environmental', ruleId: 'api-timeout', confidence: 'suspected', pageUrl: 'https://example.com/slow' });
+    const { promoted } = pageScopeAgreement({ findings: [f], coveredPages: ['https://example.com/slow', 'https://example.com/a'] });
+    assert.equal(promoted.length, 0);
+    assert.equal(f.findingType, 'environmental');
+  });
+
+  it('does not promote a failing MAJORITY of covered pages (audit L-9)', () => {
+    const findings = [
+      mkFinding({ findingType: 'environmental', ruleId: 'api-timeout', confidence: 'suspected', pageUrl: 'https://example.com/a' }),
+      mkFinding({ findingType: 'environmental', ruleId: 'api-timeout', confidence: 'suspected', pageUrl: 'https://example.com/b' }),
+    ];
+    const { promoted } = pageScopeAgreement({ findings, coveredPages: ['https://example.com/a', 'https://example.com/b', 'https://example.com/c'] });
+    assert.equal(promoted.length, 0);
+    assert.ok(findings.every((f) => f.findingType === 'environmental'));
+  });
+
   it('honors pageScopeAgreement: false', () => {
     const f = mkFinding({ findingType: 'environmental', ruleId: 'api-timeout', confidence: 'suspected', pageUrl: 'https://example.com/slow' });
     const covered = ['https://example.com/slow', 'https://example.com/a', 'https://example.com/b'];

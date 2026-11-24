@@ -319,6 +319,35 @@ describe('apiContract session-gated classification', () => {
     assert.equal(f.findingType, 'bug');
   });
 
+  it('does not downgrade a 5xx on a non-GET replay to an anonymous-replay guess (audit L-6)', async () => {
+    const ctx = ctxWithEndpoints([
+      { method: 'POST', path: '/api/orders', expectedStatus: 201 },
+    ]);
+    ctx.options.fetch = makeMockFetch([
+      { url: '/api/orders', method: 'POST', status: 500, body: 'Internal Server Error' },
+    ]);
+    const result = await apiContract(ctx);
+    assert.equal(result.findings.length, 1);
+    const f = result.findings[0];
+    assert.equal(f.severity, 'high', 'a 5xx stays a real server signal');
+    assert.equal(f.confidence, 'confirmed');
+    assert.equal(f.findingType, 'bug');
+  });
+
+  it('still downgrades an auth-looking 4xx on a non-GET replay (CSRF/session absent)', async () => {
+    const ctx = ctxWithEndpoints([
+      { method: 'POST', path: '/api/orders', expectedStatus: 201 },
+    ]);
+    ctx.options.fetch = makeMockFetch([
+      { url: '/api/orders', method: 'POST', status: 403, body: 'CSRF token missing' },
+    ]);
+    const result = await apiContract(ctx);
+    const f = result.findings[0];
+    assert.equal(f.severity, 'low');
+    assert.equal(f.confidence, 'suspected');
+    assert.equal(f.findingType, 'environmental');
+  });
+
   it('downgrades an empty-body schema mismatch (bot wall) to suspected/environmental', async () => {
     const ctx = ctxWithEndpoints([
       {

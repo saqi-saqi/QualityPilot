@@ -157,9 +157,11 @@ describe('security policy analysis', () => {
 
 describe('security executor', () => {
   let ctx;
+  let events;
 
   beforeEach(() => {
-    ctx = baseCtx();
+    events = [];
+    ctx = baseCtx({ onEvent: (e) => events.push(e) });
   });
 
   it('flags missing security headers', async () => {
@@ -279,6 +281,10 @@ describe('security executor', () => {
     const result = await securityExecutor(ctx);
     // Should not throw, just produce no header findings
     assert.equal(result.findings.length, 0);
+    // Audit M-6: the failure must be visible and must not inflate the count.
+    assert.equal(result.stats.pagesAudited, 0, 'a failed probe is not an audited page');
+    assert.equal(result.stats.pagesProbeFailed, 1);
+    assert.ok(events.some((e) => /security header probe failed for https:\/\/down\.example\.com/.test(e)));
   });
 });
 
@@ -361,5 +367,18 @@ describe('security executor — cross-page rollup', () => {
     const result = await securityExecutor(ctx);
     const mixed = result.findings.filter(f => f.ruleId === 'mixed-content-active');
     assert.equal(mixed.length, 2, 'mixed content remains page-scoped');
+  });
+});
+
+// ─── supply chain (audit L-2) ────────────────────────────────────────
+
+describe('supply chain — scanned pages never execute remote scripts', () => {
+  it('axe-core is injected only from the local install (no CDN fallback)', async () => {
+    const { readFile } = await import('node:fs/promises');
+    for (const file of ['../src/executors/a11yDeep.js', '../src/mcp/scanEngine.js']) {
+      const src = await readFile(new URL(file, import.meta.url), 'utf8');
+      const cdn = new RegExp('unpkg' + '\\.com|jsdelivr' + '\\.net', 'i');
+      assert.doesNotMatch(src, cdn, `${file} must not load remote scripts into a scanned page`);
+    }
   });
 });

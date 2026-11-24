@@ -52,6 +52,11 @@ describe('valuesForGenerator', () => {
     assert.ok(vals.some(v => /OR.*1.*1/i.test(v)));
   });
 
+  it('does not advertise destructive SQL payloads (audit M-4)', () => {
+    const vals = valuesForGenerator('sql');
+    assert.ok(vals.every((v) => !/DROP|UNION/i.test(v)), 'no DROP or UNION payloads');
+  });
+
   it('returns empty array for unknown generator', () => {
     assert.deepEqual(valuesForGenerator('nonexistent'), []);
   });

@@ -86,6 +86,17 @@ describe('buildIssueBody', () => {
     assert.match(body, /```\nHTTP 404 on \/auth\/login\n```/);
   });
 
+  it('scrubs cookie values from description + evidence before anything leaves for a tracker (audit H-3)', () => {
+    const body = buildIssueBody({
+      ...sampleFinding,
+      description: 'Set-Cookie: session=SUPER-SECRET-COOKIE; Path=/; HttpOnly',
+      evidence: 'Set-Cookie: session=SUPER-SECRET-COOKIE',
+      reproSteps: ['Replay the response headers'],
+    });
+    assert.doesNotMatch(body, /SUPER-SECRET-COOKIE/, 'raw cookie value must not reach the issue body');
+    assert.match(body, /\[REDACTED\]/);
+  });
+
   it('includes repro steps as a numbered list', () => {
     const body = buildIssueBody(sampleFinding);
     assert.match(body, /1\. Open \//);

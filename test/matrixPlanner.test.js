@@ -31,6 +31,21 @@ describe('planMatrix', () => {
     assert.throws(() => planMatrix(null), /requires a plan/i);
   });
 
+  it('throws on unknown executor names instead of silently running zero cells (audit M-3)', () => {
+    assert.throws(
+      () => planMatrix({ ...samplePlan, executors: ['e2e', 'not-a-real-executor'] }),
+      /Unknown executor name\(s\): not-a-real-executor/,
+    );
+  });
+
+  it('schedules page-scoped legacy executors into ONE site-wide no-browser cell', () => {
+    const cells = planMatrix({ ...samplePlan, executors: ['legacy-links', 'legacy-console', 'legacy-network'] });
+    const siteCells = cells.filter(c => c.id === 'no-browser::site');
+    assert.equal(siteCells.length, 1, 'one cell per run, not per role');
+    assert.equal(siteCells[0].needsBrowser, false);
+    assert.deepEqual(siteCells[0].executors, ['legacy-links', 'legacy-console', 'legacy-network']);
+  });
+
   it('includes the "anon" role by default', () => {
     const cells = planMatrix({ ...samplePlan, flows: [] });
     const roles = new Set(cells.map(c => c.role));

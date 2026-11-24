@@ -241,7 +241,20 @@ describe('runDiff', () => {
   });
 
   it('findingKey falls back to normalized title', () => {
-    assert.equal(findingKey({ ruleId: 'r', pageUrl: 'https://x.test/' }), 'id:r|https://x.test/');
+    // Audit L-10: a bare-origin URL normalizes without the trailing slash, so
+    // 'https://x.test' and 'https://x.test/' are the SAME page identity.
+    assert.equal(findingKey({ ruleId: 'r', pageUrl: 'https://x.test/' }), 'id:r|https://x.test');
+    assert.equal(findingKey({ ruleId: 'r', pageUrl: 'https://x.test' }), 'id:r|https://x.test');
+    assert.equal(
+      findingKey({ ruleId: 'r', pageUrl: 'https://X.test:443/page' }),
+      findingKey({ ruleId: 'r', pageUrl: 'https://x.test/page' }),
+      'host casing + explicit default port do not create a second identity',
+    );
+    assert.notEqual(
+      findingKey({ ruleId: 'r', pageUrl: 'https://x.test/app#/login' }),
+      findingKey({ ruleId: 'r', pageUrl: 'https://x.test/app#/register' }),
+      'hash-routed SPA pages stay distinct targets',
+    );
     assert.equal(findingKey({ title: '  Mixed   Case  ' }), 'title:mixed case');
     assert.equal(normalizeTitle('A  B'), 'a b');
     assert.equal(findingKey({}), null);

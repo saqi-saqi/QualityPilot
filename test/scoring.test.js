@@ -107,6 +107,13 @@ describe('calculateScore', () => {
     assert.equal(calculateScore(probable), 94.4);   // 8 * 0.7 = 5.6
     assert.equal(calculateScore(suspected), 97.6);   // 8 * 0.3 = 2.4
   });
+
+  it('normalizes severity/confidence casing — "Medium" must deduct like "medium" (audit L-5)', () => {
+    const lower = [{ severity: 'medium', confidence: 'confirmed', findingType: 'bug' }];
+    const title = [{ severity: 'Medium', confidence: 'Confirmed', findingType: 'Bug' }];
+    assert.equal(calculateScore(title), calculateScore(lower));
+    assert.equal(calculateScore(title), 96, '4-point deduction, not 0');
+  });
 });
 
 describe('summarizeFindings', () => {

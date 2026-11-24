@@ -163,6 +163,13 @@ describe('check evaluateGate', () => {
     assert.match(gate.reason, /below the minimum 50/);
   });
 
+  it('formats float noise out of the gate reason (audit N-1)', () => {
+    const pass = evaluateGate({ findings: [], score: 63.099999999999994 });
+    assert.match(pass.reason, /score: 63\.1\)/, 'no 63.099999999999994 in the verdict line');
+    const fail = evaluateGate({ findings: [], score: 63.099999999999994, minScore: 80 });
+    assert.match(fail.reason, /FAIL: score 63\.1 is below the minimum 80/);
+  });
+
   it('fail-on takes precedence over min-score when both fail', () => {
     const gate = evaluateGate({ findings: [{ severity: 'critical', confidence: 'confirmed' }], score: 10, failOn: 'critical,high', minScore: 90 });
     assert.equal(gate.failed, true);

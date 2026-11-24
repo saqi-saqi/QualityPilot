@@ -539,6 +539,17 @@ describe('TestRailAdapter.publishRunResults', () => {
     assert.match(result.error, /SQA_TESTRAIL_URL/);
   });
 
+  it('rejects a non-http(s) or plain-http URL before attaching Basic credentials (audit L-3)', async () => {
+    const never = async () => { throw new Error('fetch must not be called'); };
+    const badScheme = await publishToTestRail(run, { fetch: never, map, email: 'qa@example.com', apiKey: 'k', projectId: 9, url: 'ftp://files.testrail.io' });
+    assert.equal(badScheme.ok, false);
+    assert.match(badScheme.error, /TestRail URL rejected/);
+
+    const plainHttp = await publishToTestRail(run, { fetch: never, map, email: 'qa@example.com', apiKey: 'k', projectId: 9, url: 'http://t.io' });
+    assert.equal(plainHttp.ok, false);
+    assert.match(plainHttp.error, /plain http is not allowed/);
+  });
+
   it('creates a run with include_all:false + mapped case ids and posts results', async () => {
     const { calls, fetch } = makeTestRailFetch();
     const result = await publishToTestRail(run, { fetch, map, email: 'qa@example.com', apiKey: 'secret', projectId: 9, url: 'https://foo.testrail.io' });
@@ -665,6 +676,13 @@ describe('XrayAdapter.publishRunResults', () => {
     assert.equal(byTest['QA-101'], 'FAILED');
     assert.equal(byTest['QA-102'], 'PASS');
     assert.match(imp.body.tests.find((t) => t.testKey === 'QA-101').comment, /404 link/);
+  });
+
+  it('rejects an invalid Xray base URL before attaching credentials (audit L-3)', async () => {
+    const never = async () => { throw new Error('fetch must not be called'); };
+    const result = await publishToXray(run, { fetch: never, clientId: 'a', clientSecret: 'b', baseUrl: 'ftp://xray.internal' });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /Xray base URL rejected/);
   });
 
   it('honours SQA_XRAY_BASE_URL and fails safely on auth errors', async () => {

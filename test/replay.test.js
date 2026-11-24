@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 // Private-target opt-in MUST be set before any app module import (config
 // freezes env at load): the replay scans the loopback fixture server.
@@ -10,7 +12,7 @@ process.env.NODE_ENV = 'test';
 process.env.SQA_ALLOW_PRIVATE = 'true';
 process.env.ALLOW_PRIVATE_HOSTS = 'true';
 
-const { replayMain, retargetPlan } = await import('../src/cli/replay.js');
+const { replayMain, retargetPlan, replayCoverage, limitPlanPages } = await import('../src/cli/replay.js');
 const { exportPlanJson } = await import('../src/export/planJson.js');
 
 function planArtifact(targetUrl) {
@@ -109,5 +111,62 @@ describe('replay — CLI', () => {
       if (fx.server?.close) fx.server.close();
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  it('fails (exit 70) when matrix cells failed — a replay that executed nothing must never PASS (audit H-1)', async () => {
+    const fx = await (await import('./fixtures/site/server.js')).startFixtureServer();
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'qp-replay-'));
+    // Deterministic cell failure: run the real CLI in a child process with
+    // PLAYWRIGHT_BROWSERS_PATH pointed at an empty dir, so the planned firefox
+    // cell cannot launch regardless of what is installed on this machine.
+    const emptyBrowsers = path.join(tmp, 'no-browsers');
+    fs.mkdirSync(emptyBrowsers);
+    try {
+      const artifact = planArtifact(fx.url);
+      artifact.browsers = ['firefox'];
+      const planPath = path.join(tmp, 'plan.json');
+      fs.writeFileSync(planPath, JSON.stringify(artifact));
+      const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+      const res = spawnSync(process.execPath, ['src/cli/qualitypilot.js', 'replay', planPath, '--timeout', '60000'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          NODE_ENV: 'test',
+          PLAYWRIGHT_BROWSERS_PATH: emptyBrowsers,
+          SQA_ALLOW_PRIVATE: 'true',
+          ALLOW_PRIVATE_HOSTS: 'true',
+        },
+      });
+      assert.equal(res.status, 70, `failed cells must exit 70, never 0\n${res.stdout}\n${res.stderr}`);
+      assert.match(res.stderr, /replay matrix incomplete/);
+    } finally {
+      if (fx.server?.close) fx.server.close();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('replay — coverage and page cap helpers (audit N-2 / N-3)', () => {
+  it('replayCoverage counts only plan pages that failed to load', () => {
+    const plan = { pages: [{ url: 'https://x.test/a' }, { url: 'https://x.test/b' }] };
+    assert.deepEqual(
+      replayCoverage(plan, { coverageFailures: [{ pageUrl: 'https://x.test/a' }] }),
+      { pagesAttempted: 2, pagesScanned: 1 },
+    );
+    assert.deepEqual(
+      replayCoverage(plan, { coverageFailures: [{ pageUrl: 'https://other.test/z' }] }),
+      { pagesAttempted: 2, pagesScanned: 2 },
+      'failures outside the plan page set do not reduce coverage',
+    );
+    assert.equal(replayCoverage({ pages: [] }, {}), null);
+  });
+
+  it('limitPlanPages applies --max-pages to the plan page set', () => {
+    const plan = { pages: [{ url: 'a' }, { url: 'b' }, { url: 'c' }] };
+    assert.equal(limitPlanPages(plan, 2), 1);
+    assert.deepEqual(plan.pages.map((p) => p.url), ['a', 'b']);
+    assert.equal(limitPlanPages(plan, 5), 0);
+    assert.equal(limitPlanPages(plan, null), 0);
   });
 });

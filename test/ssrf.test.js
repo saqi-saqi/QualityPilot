@@ -335,6 +335,18 @@ describe('safeFetch', () => {
       /Protocol not allowed/
     );
   });
+
+  it('applies the per-hop deadline even when the caller passes its own signal (audit M-7)', async () => {
+    const controller = new AbortController();
+    const hanging = (url, init) => new Promise((_, reject) => {
+      init.signal.addEventListener('abort', () => reject(new Error('aborted by deadline')), { once: true });
+    });
+    await assert.rejects(
+      () => safeFetch('http://198.51.100.1/hang', { signal: controller.signal }, { fetchImpl: hanging, timeoutMs: 30 }),
+      /aborted by deadline/,
+      'a caller signal must not disable the per-hop timeout',
+    );
+  });
 });
 
 // ─── safeFetch redirect handling (audit L-3) ──────────────────────────────

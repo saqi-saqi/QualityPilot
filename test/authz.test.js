@@ -75,6 +75,30 @@ describe('authz executor', () => {
     assert.equal(calls, 10);
   });
 
+  it('announces cap truncation instead of silently dropping endpoints (audit L-7)', async () => {
+    const events = [];
+    ctx = makeCtx({ onEvent: (m) => events.push(String(m)) });
+    ctx.plan.apiEndpoints = Array.from({ length: 14 }, (_, i) => ({ method: 'GET', path: `/rest/admin/endpoint-${i}` }));
+    ctx.options.fetch = fetchJson(401, '{}');
+    await authzExecutor(ctx);
+    assert.ok(events.some((m) => /first 10 of 14 admin endpoints/.test(m)), events.join(' | '));
+  });
+
+  it('one unusable baseUrl does not abort probing of later endpoints (audit L-7)', async () => {
+    const events = [];
+    ctx = makeCtx({ onEvent: (m) => events.push(String(m)) });
+    ctx.plan.apiEndpoints = [
+      { method: 'GET', path: '/rest/admin/broken', baseUrl: 'http://[not-a-url' },
+      { method: 'GET', path: '/rest/admin/application-configuration' },
+    ];
+    ctx.options.fetch = fetchJson(200, '{"config":{}}');
+
+    const result = await authzExecutor(ctx);
+    assert.equal(result.findings.length, 1, 'the reachable endpoint after the broken one is still probed');
+    assert.equal(result.findings[0].pageUrl.includes('/rest/admin/application-configuration'), true);
+    assert.equal(result.stats.skippedNoBase, 1);
+  });
+
   it('never records admin response bodies in evidence (may contain secrets)', async () => {
     ctx.plan.apiEndpoints = [{ method: 'GET', path: '/rest/admin/secret' }];
     ctx.options.fetch = fetchJson(200, '{"apiKey":"SUPER-SECRET-VALUE","users":["admin"]}');

@@ -336,6 +336,32 @@ describe('e2eExecutor with mock context', () => {
     assert.match(result.findings[0].title, /Login/);
   });
 
+  it('applies a flow viewport to the page — newPage() takes no viewport argument (audit L-1)', async () => {
+    const applied = [];
+    class ViewportPage extends MockPage {
+      async setViewportSize(size) { applied.push(size); }
+    }
+    class ViewportContext { async newPage() { return new ViewportPage({ textContent: { h1: 'Welcome' } }); } }
+    const ctx = {
+      plan: {
+        targetUrl: 'https://example.com',
+        viewports: [{ width: 1280, height: 720 }],
+        flows: [{
+          name: 'Mobile cart',
+          startUrl: 'https://example.com/',
+          viewport: { width: 375, height: 667 },
+          steps: [{ action: 'assertVisible', selector: 'h1' }],
+        }],
+      },
+      context: new ViewportContext(),
+      createFinding: createFindingFactory(),
+      onEvent: () => {},
+      signal: undefined,
+    };
+    await e2eExecutor(ctx);
+    assert.deepEqual(applied, [{ width: 375, height: 667 }], 'flow viewport is set explicitly after the page opens');
+  });
+
   it('passes when all flows succeed', async () => {
     class MockContext {
       async newPage() {
