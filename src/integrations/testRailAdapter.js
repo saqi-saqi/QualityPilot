@@ -29,6 +29,7 @@
  */
 
 import { fineSignature, findingSignature } from './issueTracker.js';
+import { validateAdapterUrl } from './adapterUrl.js';
 
 const STATUS_PASSED = 1;
 const STATUS_FAILED = 5;
@@ -111,6 +112,13 @@ export async function publishRunResults(run, opts = {}) {
   const { config, missing } = resolveConfig(opts);
   if (missing.length) {
     return { ok: false, error: `SQA_TESTRAIL_* not configured (missing: ${missing.join(', ')})` };
+  }
+
+  // Audit L-3: this URL carries Basic-auth credentials — validate its shape
+  // and scheme (https unless SQA_ALLOW_INSECURE_ADAPTER_HTTP=1) before use.
+  const urlCheck = validateAdapterUrl(config.url);
+  if (!urlCheck.ok) {
+    return { ok: false, error: `TestRail URL rejected: ${urlCheck.error}` };
   }
 
   const fetchImpl = opts.fetch || globalThis.fetch;

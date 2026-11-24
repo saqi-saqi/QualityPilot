@@ -28,6 +28,7 @@
  */
 
 import { fineSignature, findingSignature } from './issueTracker.js';
+import { validateAdapterUrl } from './adapterUrl.js';
 
 const DEFAULT_BASE_URL = 'https://xray.cloud.getxray.app';
 
@@ -116,6 +117,13 @@ export async function publishRunResults(run, opts = {}) {
   const { config, missing } = resolveConfig(opts);
   if (missing.length) {
     return { ok: false, error: `SQA_XRAY_* not configured (missing: ${missing.join(', ')})` };
+  }
+
+  // Audit L-3: client credentials are attached to this base URL — validate
+  // its shape and scheme before any request is made.
+  const urlCheck = validateAdapterUrl(config.baseUrl);
+  if (!urlCheck.ok) {
+    return { ok: false, error: `Xray base URL rejected: ${urlCheck.error}` };
   }
 
   const fetchImpl = opts.fetch || globalThis.fetch;
