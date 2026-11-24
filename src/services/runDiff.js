@@ -22,6 +22,29 @@ export function normalizeTitle(title) {
 }
 
 /**
+ * Normalize a finding's page URL for identity matching (audit L-10).
+ *
+ * Run A and run B routinely record the same page slightly differently — a
+ * trailing slash on the root, an explicit default port, host casing — and the
+ * raw-string key turned those into a false "resolved + new" pair. URL
+ * normalizes scheme/host casing and default ports itself; the path stays
+ * case-sensitive; the FRAGMENT IS PRESERVED because hash-routed SPA pages
+ * (`#/login` vs `#/register`) are distinct crawl targets.
+ */
+export function normalizePageUrl(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    let out = url.toString();
+    if (url.pathname === '/' && !url.search && !url.hash) out = out.replace(/\/$/, '');
+    return out;
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * Identity key for a finding: ruleId + pageUrl when both are present,
  * otherwise the normalized title (prefixed so the two can never collide).
  * Returns null when the finding has no usable identity.
@@ -29,7 +52,7 @@ export function normalizeTitle(title) {
 export function findingKey(finding) {
   if (!finding || typeof finding !== 'object') return null;
   const ruleId = typeof finding.ruleId === 'string' ? finding.ruleId.trim() : '';
-  const pageUrl = typeof finding.pageUrl === 'string' ? finding.pageUrl.trim() : '';
+  const pageUrl = normalizePageUrl(finding.pageUrl);
   if (ruleId && pageUrl) return `id:${ruleId}|${pageUrl}`;
   const title = normalizeTitle(finding.title);
   return title ? `title:${title}` : null;
