@@ -284,7 +284,7 @@ export function shouldFail(findings, failOn) {
   // confirmed findings via evaluateGate, so it is unchanged.
   return findings
     ?.filter((f) => f.findingType !== 'environmental')
-    .some((f) => (SEVERITY_RANK[f.severity] ?? 0) >= threshold);
+    .some((f) => (SEVERITY_RANK[String(f.severity || '').toLowerCase()] ?? 0) >= threshold);
 }
 
 /**
@@ -332,7 +332,7 @@ export function evaluateGate({ findings = [], score, failOn = 'none', minScore =
       return {
         failed: true,
         exitCode: EXIT_THRESHOLD_EXCEEDED,
-        reason: `FAIL: score ${effective} is below the minimum ${min}`,
+        reason: `FAIL: score ${roundScore(effective)} is below the minimum ${min}`,
       };
     }
   }
@@ -340,7 +340,7 @@ export function evaluateGate({ findings = [], score, failOn = 'none', minScore =
   return {
     failed: false,
     exitCode: EXIT_OK,
-    reason: `PASS: gate satisfied (fail-on: ${failOn || 'none'}, min-score: ${minScore ?? 'none'}, score: ${score ?? '?'})`,
+    reason: `PASS: gate satisfied (fail-on: ${failOn || 'none'}, min-score: ${minScore ?? 'none'}, score: ${score == null ? '?' : roundScore(score)})`,
   };
 }
 

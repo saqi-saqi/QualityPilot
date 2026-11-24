@@ -4,7 +4,7 @@
  * Usage:
  *   qualitypilot replay <plan.json> [--url <target>] [--fail-on <sev|list>]
  *                       [--min-score <n>] [--timeout <ms>] [--max-pages <n>]
- *                       [--ignore-file <waivers.json>]
+ *                       [--ignore-file <waivers.json>] [--authorized-target]
  *
  * Loads an exported plan JSON (qualitypilot/plan artifact — see
  * `qualitypilot export`), saves it as an approved draft, and executes it
@@ -45,6 +45,7 @@ function parseReplayArgs(argv) {
     timeout: 600000,
     maxPages: null,
     ignoreFile: null,
+    authorizedTarget: false,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -65,6 +66,12 @@ function parseReplayArgs(argv) {
     } else if (a === '--ignore-file') {
       opts.ignoreFile = args[++i];
       if (!opts.ignoreFile) throw new Error('--ignore-file requires a waiver file path');
+    } else if (a === '--authorized-target') {
+      // Same meaning as `check --authorized-target`: allow ACTIVE injection
+      // probing on non-loopback targets. The GitHub Action replays plans
+      // against preview deployments, so without this flag injection would be
+      // silently skipped on every remote target (audit H-2).
+      opts.authorizedTarget = true;
     } else if (a.startsWith('--')) {
       throw new Error(`Unknown option: ${a}`);
     } else {
@@ -73,7 +80,7 @@ function parseReplayArgs(argv) {
   }
 
   if (positional.length !== 1) {
-    throw new Error('Usage: qualitypilot replay <plan.json> [--url <target>] [--fail-on <sev|list>] [--min-score <n>] [--timeout <ms>] [--max-pages <n>] [--ignore-file <file>]');
+    throw new Error('Usage: qualitypilot replay <plan.json> [--url <target>] [--fail-on <sev|list>] [--min-score <n>] [--timeout <ms>] [--max-pages <n>] [--ignore-file <file>] [--authorized-target]');
   }
   opts.planFile = positional[0];
   return opts;
@@ -136,6 +143,37 @@ export function retargetPlan(plan, newTargetUrl) {
   return plan;
 }
 
+/**
+ * Apply the `--max-pages` cap to a plan's page set (audit N-3).
+ * Returns the number of dropped pages (0 when nothing changed).
+ */
+export function limitPlanPages(plan, maxPages) {
+  if (maxPages == null || !Array.isArray(plan?.pages) || plan.pages.length <= maxPages) return 0;
+  const dropped = plan.pages.length - maxPages;
+  plan.pages = plan.pages.slice(0, maxPages);
+  return dropped;
+}
+
+/**
+ * Coverage-aware score options for a replay (audit N-2).
+ *
+ * The plan's page set is what the replay attempted; coverageFailures record
+ * which of those pages could not be loaded. The check path scores coverage
+ * this way (runManager) — without it a replay whose pages all failed still
+ * reported 100/100.
+ *
+ * @returns {{pagesAttempted:number, pagesScanned:number}|null} null when the
+ *          plan carries no page set (score falls back to findings only).
+ */
+export function replayCoverage(plan, result) {
+  const urls = new Set((plan?.pages || []).map((p) => p?.url).filter(Boolean));
+  if (urls.size === 0) return null;
+  const failed = new Set((result?.coverageFailures || [])
+    .map((f) => f?.pageUrl)
+    .filter((u) => u && urls.has(u)));
+  return { pagesAttempted: urls.size, pagesScanned: Math.max(0, urls.size - failed.size) };
+}
+
 function markdownSummary(plan, result, gate) {
   const findings = result.findings || [];
   const envApp = envVsApp(findings);
@@ -186,25 +224,66 @@ export async function replayMain(argv = process.argv) {
     registerAllExecutors();
     registerLegacyChecks();
 
+    // Audit N-3: --max-pages is an Action input; it was parsed and silently
+    // ignored. Apply it to the plan's page set (flows are left untouched —
+    // they are explicit user intent).
+    const droppedPages = limitPlanPages(plan, opts.maxPages);
+    if (droppedPages > 0) {
+      console.log(`Limited replay to ${opts.maxPages} page(s) — ${droppedPages} page(s) dropped by --max-pages`);
+    }
+
     console.log(`QualityPilot replay — plan '${plan.id}' against ${plan.targetUrl}`);
 
     const browserPool = new BrowserPool();
     const createFinding = createFindingFactory();
+    // Audit M-5: --timeout was parsed and never used — a hung replay blocked
+    // the Action until the job's own timeout. Abort the matrix at the
+    // deadline and fail the replay.
+    const controller = new AbortController();
+    let timedOut = false;
+    const deadlineTimer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, opts.timeout);
     try {
       const result = await runMatrix({
         plan,
         browserPool,
         createFinding,
         onEvent: (msg) => console.log(`  · ${msg}`),
-        signal: undefined,
+        signal: controller.signal,
         options: {
           dedup: true,
           runId: `replay_${Date.now()}`,
           retryBeforeConfirm: true,
           crossCellAgreement: true,
           pageScopeAgreement: true,
+          // Audit H-2: without this the injection executor's non-loopback
+          // authorization gate never opens on the Action's preview targets.
+          authorizedTarget: opts.authorizedTarget === true,
         },
       });
+
+      // Audit H-1: the check path fails the run when cells fail
+      // (runManager); replay scored the findings and exited 0 even when the
+      // matrix executed nothing ("PASS ... EXIT=0" on 0/1 cells).
+      if (timedOut) {
+        console.error(`ERROR: replay timed out after ${opts.timeout}ms — the matrix was aborted`);
+        return EXIT_FAILURE;
+      }
+      const failedCells = result.stats?.failedCells ?? 0;
+      const abortedCells = result.stats?.abortedCells ?? 0;
+      if (failedCells > 0 || abortedCells > 0) {
+        const totalCells = result.stats?.totalCells ?? 0;
+        console.error(`ERROR: replay matrix incomplete — ${failedCells} cell(s) failed, ${abortedCells} aborted (of ${totalCells}); no gate verdict is trustworthy`);
+        for (const cell of (result.stats?.cells || []).filter((c) => c.status === 'error').slice(0, 5)) {
+          const detail = cell.error
+            || (cell.executors || []).find((e) => e.status === 'error')?.error
+            || 'executor error';
+          console.error(`  · cell ${cell.cellId}: ${detail}`);
+        }
+        return EXIT_FAILURE;
+      }
 
       const findings = result.findings || [];
 
@@ -221,7 +300,7 @@ export async function replayMain(argv = process.argv) {
         for (const w of waiverResult.warnings) console.error(w);
       }
 
-      const score = calculateScore(findings);
+      const score = calculateScore(findings, replayCoverage(plan, result) || {});
       const summary = summarizeFindings(findings, result.stats?.totalCells ?? 0);
       const gate = evaluateGate({ findings: gateFindings, score, failOn: opts.failOn, minScore: opts.minScore });
 
@@ -239,6 +318,7 @@ export async function replayMain(argv = process.argv) {
       }
       return gate.exitCode;
     } finally {
+      clearTimeout(deadlineTimer);
       await browserPool.shutdown?.().catch?.(() => {}) ?? browserPool.close?.().catch?.(() => {});
       clearExecutors();
     }
