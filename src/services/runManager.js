@@ -765,6 +765,41 @@ export async function draftPlan(url, options = {}) {
 }
 
 /**
+ * Build the persisted `run.options` record from caller options.
+ *
+ * Exported so option PERSISTENCE is testable: audit H-2 found that
+ * `--openapi` was parsed by the CLI, passed to createRunWithMatrix, and then
+ * silently dropped here — executeRunWithMatrix reads run.options.openapiSpec,
+ * so the spec never reached the plan. The same class of bug made
+ * `--authorized-target` dead one layer down (matrixOptionsForRun).
+ */
+export function buildRunOptions(options = {}) {
+  return {
+    maxPages: Math.min(Math.max(options.maxPages || 1, 1), 100),
+    maxDepth: options.maxDepth || 2,
+    concurrency: Math.min(Math.max(Number(options.concurrency) || 1, 1), 4),
+    browsers: options.browsers || ['chromium'],
+    viewports: options.viewports || null,    // null = infer from crawl
+    executors: options.executors || null,    // null = use plan defaults
+    roles: options.roles || null,             // null = infer from plan
+    dedup: options.dedup !== false,
+    activeTesting: options.activeTesting === true,
+    authorizedTarget: options.authorizedTarget === true,
+    // CLI `--openapi <spec>` (Phase 9): the parsed spec must survive the run
+    // record — executeRunWithMatrix replaces the plan's inferred endpoints.
+    ...(options.openapiSpec ? { openapiSpec: options.openapiSpec } : {}),
+    // Monitoring metadata (Rung 3) — carried through to execution so the
+    // publisher can filter regressions and notify the right webhook.
+    ...(options.monitorId ? { monitorId: options.monitorId } : {}),
+    // CLI `--login <recording>` (Phase 9): reuse a recorded login session.
+    ...(options.loginRecording ? { loginRecording: options.loginRecording } : {}),
+    ...(options.previousRunId ? { previousRunId: options.previousRunId } : {}),
+    ...(options.onlyNewFindings != null ? { onlyNewFindings: options.onlyNewFindings } : {}),
+    ...(options.webhookUrl ? { webhookUrl: options.webhookUrl } : {}),
+  };
+}
+
+/**
  * Create a run that uses the matrix execution path.
  *
  * @param {object} input
@@ -823,26 +858,7 @@ export async function createRunWithMatrix({ url, options = {}, plan: submittedPl
     url: effectiveUrl,
     status: 'queued',
     startedAt: new Date().toISOString(),
-    options: {
-      maxPages: Math.min(Math.max(options.maxPages || 1, 1), 100),
-      maxDepth: options.maxDepth || 2,
-      concurrency: Math.min(Math.max(Number(options.concurrency) || 1, 1), 4),
-      browsers: options.browsers || ['chromium'],
-      viewports: options.viewports || null,    // null = infer from crawl
-      executors: options.executors || null,    // null = use plan defaults
-      roles: options.roles || null,             // null = infer from plan
-      dedup: options.dedup !== false,
-      activeTesting: options.activeTesting === true,
-      authorizedTarget: options.authorizedTarget === true,
-      // Monitoring metadata (Rung 3) — carried through to execution so the
-      // publisher can filter regressions and notify the right webhook.
-      ...(options.monitorId ? { monitorId: options.monitorId } : {}),
-      // CLI `--login <recording>` (Phase 9): reuse a recorded login session.
-      ...(options.loginRecording ? { loginRecording: options.loginRecording } : {}),
-      ...(options.previousRunId ? { previousRunId: options.previousRunId } : {}),
-      ...(options.onlyNewFindings != null ? { onlyNewFindings: options.onlyNewFindings } : {}),
-      ...(options.webhookUrl ? { webhookUrl: options.webhookUrl } : {}),
-    },
+    options: buildRunOptions(options),
     events: [],
     findings: [],
     matrixStats: null,
@@ -875,6 +891,50 @@ export async function createRunWithMatrix({ url, options = {}, plan: submittedPl
 
   processQueue();
   return runId;
+}
+
+/**
+ * Matrix execution options derived from a stored run record.
+ *
+ * Exported so option THREADING is testable. Audit H-2 found that
+ * `--authorized-target` was stored on the run but never forwarded to
+ * runMatrix, so the injection executor's non-loopback authorization gate
+ * could never open (loopback benchmarks hid it). `openapiSpec` had the same
+ * class of bug one layer up: createRunWithMatrix dropped it entirely.
+ *
+ * `pages` is the crawled page set minus Playwright handles — page-scoped
+ * matrix executors read it.
+ */
+export function matrixOptionsForRun(run, { pages = [], runId, sessionCookie = null } = {}) {
+  const options = run?.options || {};
+  const siteOrigin = (() => {
+    try { return new URL(run?.url || '').origin; } catch { return null; }
+  })();
+  return {
+    dedup: options.dedup,
+    concurrency: options.concurrency || 1,
+    screenshotsDir: SCREENSHOTS_DIR,
+    evidenceDir: runId ? evidenceDirFor(runId) : '',
+    runId,
+    roles: options.roles,
+    coveredPages: (pages || []).map((p) => p.url),
+    // Audit M-3: page-scoped site executors (legacy-links/console/network
+    // and the page-based legacy checks) need the crawled records.
+    pages: (pages || []).map(({ page, ...rest }) => rest),
+    ...(siteOrigin ? { siteOrigin } : {}),
+    pageScopeAgreement: true,
+    pageScopePromotion: true,
+    crossCellAgreement: true,
+    retryBeforeConfirm: true,
+    allowActiveFuzz: options.activeTesting && options.authorizedTarget,
+    // Audit H-2: the injection executor gates non-loopback probing on this.
+    authorizedTarget: options.authorizedTarget === true,
+    // Visual executor keys baselines on this (baselineStore is
+    // monitor-scoped; falls back to runId when absent).
+    ...(options.monitorId ? { monitorId: options.monitorId } : {}),
+    // Authenticated API contract probing with the recorded session
+    ...(sessionCookie ? { sessionCookie } : {}),
+  };
 }
 
 /**
@@ -924,6 +984,11 @@ export async function executeRunWithMatrix(runId, payload) {
       // Recorded sessions come from monitors (run.options.monitorId) or the
       // CLI `--login <recording>` flag (Phase 9).
       const sessionKey = run.options.monitorId || run.options.loginRecording;
+      // Audit M-1: `--login <typo>` silently degraded to an anonymous scan —
+      // the run reported success with sessionApplied=false and zero session
+      // events. An explicit login recording that does not exist is a usage
+      // error, not an anonymous run.
+      const explicitLogin = !run.options.monitorId && Boolean(run.options.loginRecording);
       if (sessionKey) {
         const { SessionStore } = await import('./sessionStore.js');
         const sessionStore = new SessionStore();
@@ -943,6 +1008,9 @@ export async function executeRunWithMatrix(runId, payload) {
           recordedSessions[role] = session;
         }
         const availableRoles = Object.keys(recordedSessions);
+        if (explicitLogin && availableRoles.length === 0) {
+          throw new Error(`No recorded login session named "${run.options.loginRecording}" — record one first, or omit --login (refusing to silently scan anonymously)`);
+        }
         if (availableRoles.length > 0) {
           run.options.roles = availableRoles;
           recordedSession = recordedSessions[availableRoles[0]];
@@ -1092,26 +1160,7 @@ export async function executeRunWithMatrix(runId, payload) {
       emitEvent(runId, 'Running matrix');
       const matrixResult = await runMatrix({
         plan, browserPool, createFinding, onEvent, signal,
-        options: {
-          dedup: run.options.dedup,
-          concurrency: run.options.concurrency || 1,
-          screenshotsDir: SCREENSHOTS_DIR,
-          evidenceDir: evidenceDirFor(runId),
-          runId,
-          roles: run.options.roles,
-          // Phase D (BUILD_PLAN steps 2–4): matrix-level classification.
-          coveredPages: (pages || []).map((p) => p.url),
-          pageScopeAgreement: true,
-          pageScopePromotion: true,
-          crossCellAgreement: true,
-          retryBeforeConfirm: true,
-          allowActiveFuzz: run.options.activeTesting && run.options.authorizedTarget,
-          // Visual executor keys baselines on this (baselineStore is
-          // monitor-scoped; falls back to runId when absent).
-          ...(run.options.monitorId ? { monitorId: run.options.monitorId } : {}),
-          // Authenticated API contract probing with the recorded session
-          ...(sessionCookie ? { sessionCookie } : {}),
-        },
+        options: matrixOptionsForRun(run, { pages, runId, sessionCookie }),
       });
 
       // ─── 6. Close all pages + finalize ──────────────────────────────
