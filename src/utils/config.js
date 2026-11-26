@@ -75,8 +75,12 @@ export const config = Object.freeze({
   cleanupMaxAgeMs: intEnv(process.env.SQA_CLEANUP_MS || process.env.CLEANUP_MAX_AGE_MS, 86400000),
 
   // Storage paths
-  dataDir: process.env.SQA_DATA_DIR || './data',
-  screenshotsDir: process.env.SQA_SCREENSHOTS_DIR || './data/screenshots',
+  get dataDir() {
+    return process.env.SQA_DATA_DIR || './data';
+  },
+  get screenshotsDir() {
+    return process.env.SQA_SCREENSHOTS_DIR || `${process.env.SQA_DATA_DIR || './data'}/screenshots`;
+  },
 
   // Auth — when set, all /api/* routes (except /health) require this token
   apiToken: process.env.SQA_API_TOKEN || '',

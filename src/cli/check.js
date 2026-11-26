@@ -34,10 +34,12 @@
  *   SQA_MAX_PAGES     — max pages to crawl (default: 10 for CI)
  *   SQA_MAX_DEPTH     — max crawl depth (default: 1 for CI)
  *   SQA_CI_TIMEOUT    — run timeout in ms (default: 120000)
+ *   SQA_LLM_PRESET    — ollama | vllm | openrouter | openai | byo (or pass --llm-preset)
  */
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { toJUnitXml } from '../reporting/junit.js';
 import { toSarif } from '../reporting/sarif.js';
@@ -45,6 +47,9 @@ import { toMarkdown } from '../reporting/markdown.js';
 import { diffRuns } from '../services/runDiff.js';
 import { parseWaiverFile, applyWaivers } from '../services/waivers.js';
 import { extractJsonDocument, decodeCapturedOutput } from '../utils/jsonDocument.js';
+import { LLM_PRESET_NAMES, resetDefaultProvider } from '../explorer/llmProvider.js';
+import { parseShardSpec, resolveShardStorage } from '../matrix/sharding.js';
+import { config } from '../utils/config.js';
 
 const EXIT_OK = 0;
 const EXIT_URL_MISSING = 64;
@@ -66,10 +71,11 @@ const KNOWN_FLAGS = new Set([
   '--fail-on', '-f', '--timeout', '-t', '--max-pages', '-p', '--max-depth', '-d',
   '--min-score', '--junit', '--sarif', '--format', '--json', '--strict',
   '--baseline', '--concurrency', '--authorized-target', '--openapi',
-  '--ignore-file', '--login', '--allow-private',
+  '--ignore-file', '--login', '--allow-private', '--llm-preset',
+  '--shard', '--shard-out',
 ]);
 
-const CHECK_USAGE = 'Usage: qualitypilot check <url> [--fail-on critical|high|medium|low|info|none] [--min-score <n>] [--junit <file>] [--sarif <file>] [--baseline <file|runId>] [--ignore-file <file>] [--concurrency <1-4>] [--allow-private] [--format json|junit|sarif|markdown]';
+const CHECK_USAGE = 'Usage: testigator check <url> [--fail-on critical|high|medium|low|info|none] [--min-score <n>] [--junit <file>] [--sarif <file>] [--baseline <file|runId>] [--ignore-file <file>] [--concurrency <1-4>] [--shard <i/N>] [--shard-out <file>] [--allow-private] [--llm-preset ollama|vllm|openrouter|openai|byo] [--format json|junit|sarif|markdown]';
 
 /**
  * Parse a --fail-on value: a single severity/none (threshold mode) or a
@@ -123,6 +129,9 @@ export function parseArgs(argv) {
     loginRecording: null,
     ignoreFile: null,
     allowPrivate: false,
+    llmPreset: null,
+    shard: null,
+    shardOut: null,
   };
   const positionals = [];
 
@@ -134,7 +143,7 @@ export function parseArgs(argv) {
       continue;
     }
     if (!KNOWN_FLAGS.has(arg)) {
-      throw new Error(`Unknown option: ${arg} — run "qualitypilot check" with no arguments for usage`);
+      throw new Error(`Unknown option: ${arg} — run "testigator check" with no arguments for usage`);
     }
     if (arg === '--fail-on' || arg === '-f') {
       opts.failOn = args[++i] || 'none';
@@ -210,6 +219,17 @@ export function parseArgs(argv) {
       // same effect as SQA_ALLOW_PRIVATE=true, without editing the env.
       // Without it (and without the env var) the SSRF boundary stays on.
       opts.allowPrivate = true;
+    } else if (arg === '--llm-preset') {
+      const value = String(args[++i] || '').toLowerCase().trim();
+      if (!LLM_PRESET_NAMES.includes(value)) {
+        throw new Error(`Invalid --llm-preset value: ${value || '(none)'}. Must be one of: ${LLM_PRESET_NAMES.join(', ')}`);
+      }
+      opts.llmPreset = value;
+    } else if (arg === '--shard') {
+      opts.shard = parseShardSpec(args[++i]);
+    } else if (arg === '--shard-out') {
+      opts.shardOut = args[++i];
+      if (!opts.shardOut) throw new Error('--shard-out requires a file path');
     } else if (arg === '--strict') {
       opts.strict = true;
     }
@@ -235,7 +255,7 @@ function roundScore(score) {
 
 /** Print a compact scan summary to stdout (CI-friendly). */
 function printSummary({ url, score, findings, pages, compliance, json, diff }) {
-  console.log(`QualityPilot CI check`);
+  console.log(`Testigator CI check`);
   console.log(`URL: ${url}`);
   console.log(`Pages: ${pages || 0} | Score: ${score == null ? '?' : roundScore(score)}/100 | Findings: ${findings?.length || 0}`);
   if (diff) console.log(`Baseline ${diff.baselineRunId}: ${diff.summary}`);
@@ -425,7 +445,7 @@ export async function writeReportFiles(run, { junitPath, sarifPath } = {}) {
 }
 
 /** Run a bounded scan of the URL using the matrix. */
-async function runCheck({ url, timeout, maxPages, maxDepth, concurrency, authorizedTarget, openapiSpec, loginRecording, allowPrivate }) {
+async function runCheck({ url, timeout, maxPages, maxDepth, concurrency, authorizedTarget, openapiSpec, loginRecording, allowPrivate, shard, shardStorage }) {
   // The SSRF boundary is ON by default, exactly as documented. The operator
   // opts in per invocation (--allow-private) or via the environment
   // (SQA_ALLOW_PRIVATE=true). This used to be forced on unconditionally,
@@ -456,7 +476,19 @@ async function runCheck({ url, timeout, maxPages, maxDepth, concurrency, authori
   // scores. createRunWithMatrix validates the URL up front, same as createRun.
   const { createRunWithMatrix, getRun, cancelRun } = await import('../services/runManager.js');
 
-  const runId = await createRunWithMatrix({ url, options: { maxPages, maxDepth, concurrency, authorizedTarget, openapiSpec, loginRecording } });
+  const runId = await createRunWithMatrix({
+    url,
+    options: {
+      maxPages,
+      maxDepth,
+      concurrency,
+      authorizedTarget,
+      openapiSpec,
+      loginRecording,
+      ...(shard ? { shard } : {}),
+      ...(shardStorage ? { screenshotsDir: shardStorage.screenshotsDir, evidenceDir: shardStorage.evidenceDir } : {}),
+    },
+  });
   process.stderr.write(`Scanning ${url} (run ${runId})...\n`);
 
   const deadline = Date.now() + timeout;
@@ -493,8 +525,40 @@ export async function checkMain(argv = process.argv) {
     console.error(`ERROR: ${err.message}`);
     return EXIT_URL_MISSING;
   }
+  const prevPreset = process.env.SQA_LLM_PRESET;
+  const prevDataDir = process.env.SQA_DATA_DIR;
+  const prevScreensDir = process.env.SQA_SCREENSHOTS_DIR;
+  const prevDbPath = process.env.TESTIGATOR_DB_PATH;
+  const prevLegacyDbPath = process.env.QUALITYPILOT_DB_PATH;
+  let presetOverridden = false;
+  let shardIsolated = false;
   try {
-    const { url, failOn, timeout, maxPages, maxDepth, minScore, junitPath, sarifPath, format, json, strict, baseline, concurrency, authorizedTarget, openapi, loginRecording, ignoreFile, allowPrivate } = parsedArgs;
+    const { url, failOn, timeout, maxPages, maxDepth, minScore, junitPath, sarifPath, format, json, strict, baseline, concurrency, authorizedTarget, openapi, loginRecording, ignoreFile, allowPrivate, llmPreset, shard, shardOut } = parsedArgs;
+
+    // The provider factory reads the environment lazily at planning time; reset
+    // any cached singleton so programmatic/repeated calls pick up --llm-preset.
+    if (llmPreset) {
+      process.env.SQA_LLM_PRESET = llmPreset;
+      presetOverridden = true;
+      resetDefaultProvider();
+    }
+
+    // Isolated per-shard SQLite DB & artifact storage so concurrent CI shards
+    // never contend on one DB file or overwrite screenshots/evidence.
+    let shardStorage = null;
+    if (shard) {
+      shardStorage = resolveShardStorage(shard, config.dataDir);
+      await mkdir(shardStorage.dataDir, { recursive: true });
+      await mkdir(shardStorage.screenshotsDir, { recursive: true });
+      if (!process.env.TESTIGATOR_DB_PATH && !process.env.QUALITYPILOT_DB_PATH && !process.env.SQA_DB_PATH) {
+        const { closeDatabase } = await import('../storage/db.js');
+        closeDatabase();
+        process.env.SQA_DATA_DIR = shardStorage.dataDir;
+        process.env.SQA_SCREENSHOTS_DIR = shardStorage.screenshotsDir;
+        process.env.TESTIGATOR_DB_PATH = shardStorage.dbPath;
+        shardIsolated = true;
+      }
+    }
 
     // Phase 9: parse the OpenAPI spec at CLI time — unreadable specs are
     // usage errors (exit 64), not silent run failures.
@@ -515,9 +579,9 @@ export async function checkMain(argv = process.argv) {
     const outFormat = format || (json ? 'json' : 'text');
     const machineOutput = outFormat !== 'text';
     const progress = machineOutput ? process.stderr : process.stdout;
-    progress.write(`QualityPilot CI check — ${url}\n`);
+    progress.write(`Testigator CI check — ${url}\n`);
 
-    const run = await runCheck({ url, timeout, maxPages, maxDepth, concurrency, authorizedTarget, openapiSpec, loginRecording, allowPrivate });
+    const run = await runCheck({ url, timeout, maxPages, maxDepth, concurrency, authorizedTarget, openapiSpec, loginRecording, allowPrivate, shard, shardStorage });
 
     // A failed scan must never exit 0: without this check a broken scan
     // (e.g. Playwright browsers not installed, target unreachable) reported
@@ -535,18 +599,18 @@ export async function checkMain(argv = process.argv) {
     }
     const findings = run.findings || [];
 
-    // Waivers (Phase 10): suppressed findings stay in the report (annotated)
-    // but do not fail the gate. Expired waivers warn loudly and surface the
-    // finding again.
+    // Waivers (Phase 10 + WS4.2 baseline review): suppressed findings stay in
+    // the report (annotated) but do not fail the gate. Expired waivers warn
+    // loudly and surface the finding again.
     let waiverResult = null;
-    let effectiveFindings = findings;
+    let effectiveFindings = findings.filter((f) => !f.waived);
     if (ignoreFile) {
       try {
         const waiverText = decodeCapturedOutput(await readFile(ignoreFile));
         const { waivers } = parseWaiverFile(waiverText);
         waiverResult = applyWaivers(findings, waivers);
-        effectiveFindings = waiverResult.kept;
         for (const f of waiverResult.waived) f.waived = true;
+        effectiveFindings = waiverResult.kept.filter((f) => !f.waived);
         for (const w of waiverResult.warnings) console.error(w);
       } catch (err) {
         console.error(`ERROR: ${err.message}`);
@@ -583,30 +647,45 @@ export async function checkMain(argv = process.argv) {
     // Write requested report artifacts (JUnit XML / SARIF JSON).
     await writeReportFiles(run, { junitPath, sarifPath });
 
+    const totalWaivedCount = findings.filter((f) => f.waived).length;
+    const buildJsonReport = () => ({
+      url,
+      runId: run.runId,
+      score: roundScore(run.score),
+      status: run.status,
+      findings,
+      ...(run.pages ? { pages: run.pages } : {}),
+      ...(run.coveredPages ? { coveredPages: run.coveredPages } : {}),
+      ...(run.shard ? { shard: run.shard } : {}),
+      ...(run.totalMatrixCells != null ? { totalMatrixCells: run.totalMatrixCells } : {}),
+      ...(run.matrixStats ? { matrixStats: run.matrixStats } : {}),
+      ...(run.baselineDecisions ? { baselineDecisions: run.baselineDecisions } : {}),
+      ...(diff ? {
+        baseline: {
+          runId: diff.baselineRunId,
+          summary: diff.summary,
+          scoreDelta: diff.scoreDelta,
+          newFindings: diff.newFindings,
+          resolvedFindings: diff.resolvedFindings,
+          persistentCount: diff.persistentFindings.length,
+        },
+      } : {}),
+      ...(totalWaivedCount > 0 ? { waivedCount: totalWaivedCount } : {}),
+      compliance,
+      threshold: failOn,
+      minScore,
+      failed: gate.failed,
+      timestamp: new Date().toISOString(),
+    });
+
+    if (shardOut) {
+      await mkdir(path.dirname(path.resolve(shardOut)), { recursive: true });
+      await writeFile(shardOut, JSON.stringify(buildJsonReport(), null, 2) + '\n', 'utf8');
+      progress.write(`Wrote shard report to ${shardOut}\n`);
+    }
+
     if (outFormat === 'json') {
-      const out = {
-        url,
-        runId: run.runId,
-        score: roundScore(run.score),
-        status: run.status,
-        findings,
-        ...(diff ? {
-          baseline: {
-            runId: diff.baselineRunId,
-            summary: diff.summary,
-            scoreDelta: diff.scoreDelta,
-            newFindings: diff.newFindings,
-            resolvedFindings: diff.resolvedFindings,
-            persistentCount: diff.persistentFindings.length,
-          },
-        } : {}),
-        ...(waiverResult ? { waivedCount: waiverResult.waived.length } : {}),
-        compliance,
-        threshold: failOn,
-        minScore,
-        failed: gate.failed,
-        timestamp: new Date().toISOString(),
-      };
+      const out = buildJsonReport();
       process.stdout.write(JSON.stringify(out, null, 2));
       process.stdout.write('\n');
     } else if (outFormat === 'junit') {
@@ -620,8 +699,8 @@ export async function checkMain(argv = process.argv) {
       printSummary({ url, score: run.score, findings, pages: run.pages?.length, compliance, json, diff });
     }
 
-    const waiverNote = waiverResult && waiverResult.waived.length > 0
-      ? ` · waivers: ${waiverResult.waived.length} suppressed (--min-score still uses the unwaived run score)`
+    const waiverNote = totalWaivedCount > 0
+      ? ` · waivers: ${totalWaivedCount} suppressed (--min-score still uses the unwaived run score)`
       : '';
     (machineOutput ? process.stderr : process.stdout).write(`${gate.reason}${waiverNote}\n`);
     return gate.exitCode;
@@ -629,6 +708,26 @@ export async function checkMain(argv = process.argv) {
     console.error(`ERROR: ${err.message}`);
     process.stderr.write(err.stack + '\n');
     return EXIT_SCAN_FAILED;
+  } finally {
+    if (shardIsolated) {
+      try {
+        const { closeDatabase } = await import('../storage/db.js');
+        closeDatabase();
+      } catch { /* best effort */ }
+      if (prevDataDir === undefined) delete process.env.SQA_DATA_DIR;
+      else process.env.SQA_DATA_DIR = prevDataDir;
+      if (prevScreensDir === undefined) delete process.env.SQA_SCREENSHOTS_DIR;
+      else process.env.SQA_SCREENSHOTS_DIR = prevScreensDir;
+      if (prevDbPath === undefined) delete process.env.TESTIGATOR_DB_PATH;
+      else process.env.TESTIGATOR_DB_PATH = prevDbPath;
+      if (prevLegacyDbPath === undefined) delete process.env.QUALITYPILOT_DB_PATH;
+      else process.env.QUALITYPILOT_DB_PATH = prevLegacyDbPath;
+    }
+    if (presetOverridden) {
+      if (prevPreset === undefined) delete process.env.SQA_LLM_PRESET;
+      else process.env.SQA_LLM_PRESET = prevPreset;
+      resetDefaultProvider();
+    }
   }
 }
 

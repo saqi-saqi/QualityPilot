@@ -24,7 +24,7 @@ import { config } from '../utils/config.js';
 // services/findingRollup.js for why (Phase F: 80 findings for 8 fixes).
 // Cookies stay per page (the cookie NAME is part of the finding), and mixed
 // content stays per page (it depends on that page's resources).
-function isSiteWideHeaderFinding(finding) {
+export function isSiteWideHeaderFinding(finding) {
   const ruleId = String(finding.ruleId || '');
   if (ruleId.startsWith('header-') || ruleId === 'transport-http') return true;
   if (ruleId.startsWith('csp-')) return true;

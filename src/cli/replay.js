@@ -1,26 +1,21 @@
 /**
- * src/cli/replay.js — CI plan replay (Phase 3).
+ * src/cli/replay.js — CI plan replay (Phase 3) with matrix sharding (WS4.1).
  *
  * Usage:
- *   qualitypilot replay <plan.json> [--url <target>] [--fail-on <sev|list>]
+ *   testigator replay <plan.json> [--url <target>] [--fail-on <sev|list>]
  *                       [--min-score <n>] [--timeout <ms>] [--max-pages <n>]
  *                       [--ignore-file <waivers.json>] [--authorized-target]
- *
- * Loads an exported plan JSON (qualitypilot/plan artifact — see
- * `qualitypilot export`), saves it as an approved draft, and executes it
- * through the full matrix runner with every classifier active. No LLM key
- * needed — replay is deterministic.
- *
- * Exit codes mirror the check CLI: 0 pass, 1 gate failed, 64 usage,
- * 70 run failure. When running inside GitHub Actions, a markdown job summary
- * is appended to $GITHUB_STEP_SUMMARY.
+ *                       [--shard <i/N>] [--shard-out <file>] [--format text|json]
  */
 
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { importPlanJson } from '../export/planJson.js';
 import { transitionStatus } from '../services/testPlan.js';
 import { runMatrix } from '../matrix/matrixRunner.js';
+import { planMatrix } from '../matrix/matrixPlanner.js';
+import { parseShardSpec, resolveShardStorage, partitionShardWorkload } from '../matrix/sharding.js';
 import { BrowserPool } from '../matrix/browserPool.js';
 import { registerAllExecutors } from '../executors/index.js';
 import { registerLegacyChecks } from '../checks/index.js';
@@ -29,13 +24,14 @@ import { createFindingFactory } from '../services/findingFactory.js';
 import { calculateScore, summarizeFindings } from '../services/scoring.js';
 import { evaluateGate } from './check.js';
 import { parseWaiverFile, applyWaivers } from '../services/waivers.js';
+import { config } from '../utils/config.js';
 
 const EXIT_OK = 0;
 const EXIT_USAGE = 64;
 const EXIT_FAILURE = 70;
 const EXIT_THRESHOLD_EXCEEDED = 1;
 
-function parseReplayArgs(argv) {
+export function parseReplayArgs(argv) {
   const args = argv.slice(2);
   const positional = [];
   const opts = {
@@ -46,6 +42,9 @@ function parseReplayArgs(argv) {
     maxPages: null,
     ignoreFile: null,
     authorizedTarget: false,
+    shard: null,
+    shardOut: null,
+    format: 'text',
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -67,11 +66,18 @@ function parseReplayArgs(argv) {
       opts.ignoreFile = args[++i];
       if (!opts.ignoreFile) throw new Error('--ignore-file requires a waiver file path');
     } else if (a === '--authorized-target') {
-      // Same meaning as `check --authorized-target`: allow ACTIVE injection
-      // probing on non-loopback targets. The GitHub Action replays plans
-      // against preview deployments, so without this flag injection would be
-      // silently skipped on every remote target (audit H-2).
       opts.authorizedTarget = true;
+    } else if (a === '--shard') {
+      opts.shard = parseShardSpec(args[++i]);
+    } else if (a === '--shard-out') {
+      opts.shardOut = args[++i];
+      if (!opts.shardOut) throw new Error('--shard-out requires a file path');
+    } else if (a === '--format') {
+      const fmt = String(args[++i] || '').toLowerCase();
+      if (fmt !== 'text' && fmt !== 'json') {
+        throw new Error(`Invalid --format value: ${fmt}. Must be one of: text, json`);
+      }
+      opts.format = fmt;
     } else if (a.startsWith('--')) {
       throw new Error(`Unknown option: ${a}`);
     } else {
@@ -80,7 +86,7 @@ function parseReplayArgs(argv) {
   }
 
   if (positional.length !== 1) {
-    throw new Error('Usage: qualitypilot replay <plan.json> [--url <target>] [--fail-on <sev|list>] [--min-score <n>] [--timeout <ms>] [--max-pages <n>] [--ignore-file <file>] [--authorized-target]');
+    throw new Error('Usage: testigator replay <plan.json> [--url <target>] [--fail-on <sev|list>] [--min-score <n>] [--timeout <ms>] [--max-pages <n>] [--ignore-file <file>] [--authorized-target] [--shard <i/N>] [--shard-out <file>] [--format text|json]');
   }
   opts.planFile = positional[0];
   return opts;
@@ -94,14 +100,6 @@ function envVsApp(findings) {
   return { confirmed, suspected, flaky, environmental: env };
 }
 
-/**
- * Retarget an exported plan to a different target URL (--url). Absolute
- * same-origin URLs recorded at inference time (flow startUrls, navigate
- * steps, api-request calls, endpoint baseUrls) are rewritten to the new
- * origin — path + query preserved — so the recorded journey replays against
- * a preview deployment instead of the original site. Cross-origin URLs are
- * left untouched (they were deliberately allowed when the plan was built).
- */
 export function retargetPlan(plan, newTargetUrl) {
   const from = new URL(plan.targetUrl);
   const to = new URL(newTargetUrl);
@@ -112,10 +110,8 @@ export function retargetPlan(plan, newTargetUrl) {
       const url = new URL(u);
       const hadNoTrailingSlash = !u.endsWith('/');
       url.protocol = to.protocol;
-      url.host = to.host; // host covers hostname + port
+      url.host = to.host;
       let out = url.toString();
-      // A bare-origin URL ('https://host') normalizes to 'https://host/' —
-      // preserve the caller's original shape so assertions/storage keys match.
       if (hadNoTrailingSlash && url.pathname === '/' && !url.search && out.endsWith('/')) {
         out = out.slice(0, -1);
       }
@@ -140,13 +136,24 @@ export function retargetPlan(plan, newTargetUrl) {
   for (const ep of plan.apiEndpoints || []) {
     if (ep.baseUrl) ep.baseUrl = rewrite(ep.baseUrl);
   }
+  for (const p of plan.pages || []) {
+    if (p.url) p.url = rewrite(p.url);
+  }
+  for (const a of plan.a11yRules || []) {
+    if (a.pageUrl) a.pageUrl = rewrite(a.pageUrl);
+  }
+  for (const pb of plan.perfBudgets || []) {
+    if (pb.pageUrl) pb.pageUrl = rewrite(pb.pageUrl);
+  }
+  for (const vb of plan.visualBaselines || []) {
+    if (vb.pageUrl) vb.pageUrl = rewrite(vb.pageUrl);
+  }
+  for (const ft of plan.fuzzTargets || []) {
+    if (ft.pageUrl) ft.pageUrl = rewrite(ft.pageUrl);
+  }
   return plan;
 }
 
-/**
- * Apply the `--max-pages` cap to a plan's page set (audit N-3).
- * Returns the number of dropped pages (0 when nothing changed).
- */
 export function limitPlanPages(plan, maxPages) {
   if (maxPages == null || !Array.isArray(plan?.pages) || plan.pages.length <= maxPages) return 0;
   const dropped = plan.pages.length - maxPages;
@@ -154,17 +161,6 @@ export function limitPlanPages(plan, maxPages) {
   return dropped;
 }
 
-/**
- * Coverage-aware score options for a replay (audit N-2).
- *
- * The plan's page set is what the replay attempted; coverageFailures record
- * which of those pages could not be loaded. The check path scores coverage
- * this way (runManager) — without it a replay whose pages all failed still
- * reported 100/100.
- *
- * @returns {{pagesAttempted:number, pagesScanned:number}|null} null when the
- *          plan carries no page set (score falls back to findings only).
- */
 export function replayCoverage(plan, result) {
   const urls = new Set((plan?.pages || []).map((p) => p?.url).filter(Boolean));
   if (urls.size === 0) return null;
@@ -178,7 +174,7 @@ function markdownSummary(plan, result, gate) {
   const findings = result.findings || [];
   const envApp = envVsApp(findings);
   const lines = [
-    `## QualityPilot replay — ${plan.id}`,
+    `## Testigator replay — ${plan.id}`,
     '',
     `| Metric | Value |`,
     `| --- | --- |`,
@@ -211,34 +207,62 @@ export async function replayMain(argv = process.argv) {
     return EXIT_USAGE;
   }
 
+  const prevDataDir = process.env.SQA_DATA_DIR;
+  const prevScreensDir = process.env.SQA_SCREENSHOTS_DIR;
+  const prevDbPath = process.env.TESTIGATOR_DB_PATH;
+  const prevLegacyDbPath = process.env.QUALITYPILOT_DB_PATH;
+  let shardIsolated = false;
+
   try {
     const raw = JSON.parse(await readFile(opts.planFile, 'utf8'));
     let plan = importPlanJson(raw);
     if (opts.url) plan = retargetPlan(plan, opts.url);
-    // Walk the plan to 'approved' (draft → proposed → approved); exported
-    // plans are drafts, and createRunWithMatrix requires an approved draft.
-    // transitionStatus returns a new plan object (immutable style) — reassign.
     if (plan.status === 'draft') plan = transitionStatus(plan, 'proposed');
     if (plan.status !== 'approved') plan = transitionStatus(plan, 'approved');
+
+    let shardStorage = null;
+    if (opts.shard) {
+      shardStorage = resolveShardStorage(opts.shard, config.dataDir);
+      await mkdir(shardStorage.dataDir, { recursive: true });
+      await mkdir(shardStorage.screenshotsDir, { recursive: true });
+      if (!process.env.TESTIGATOR_DB_PATH && !process.env.QUALITYPILOT_DB_PATH && !process.env.SQA_DB_PATH) {
+        const { closeDatabase } = await import('../storage/db.js');
+        closeDatabase();
+        process.env.SQA_DATA_DIR = shardStorage.dataDir;
+        process.env.SQA_SCREENSHOTS_DIR = shardStorage.screenshotsDir;
+        process.env.TESTIGATOR_DB_PATH = shardStorage.dbPath;
+        shardIsolated = true;
+      }
+    }
 
     registerAllExecutors();
     registerLegacyChecks();
 
-    // Audit N-3: --max-pages is an Action input; it was parsed and silently
-    // ignored. Apply it to the plan's page set (flows are left untouched —
-    // they are explicit user intent).
     const droppedPages = limitPlanPages(plan, opts.maxPages);
+    const machineOutput = opts.format === 'json';
+    const logStream = machineOutput ? process.stderr : process.stdout;
     if (droppedPages > 0) {
-      console.log(`Limited replay to ${opts.maxPages} page(s) — ${droppedPages} page(s) dropped by --max-pages`);
+      logStream.write(`Limited replay to ${opts.maxPages} page(s) — ${droppedPages} page(s) dropped by --max-pages\n`);
     }
 
-    console.log(`QualityPilot replay — plan '${plan.id}' against ${plan.targetUrl}`);
+    const fullPlan = plan;
+    const fullCoveredPages = (plan.pages || []).map((p) => p?.url).filter(Boolean);
+    let effectivePlan = plan;
+    let shardCells = null;
+    let totalMatrixCells = null;
+    if (opts.shard) {
+      const fullCells = planMatrix(plan);
+      const partitioned = partitionShardWorkload({ plan, cells: fullCells, shard: opts.shard });
+      effectivePlan = partitioned.plan;
+      shardCells = partitioned.cells;
+      totalMatrixCells = partitioned.totalMatrixCells;
+      logStream.write(`Testigator replay shard ${opts.shard.spec} (${partitioned.mode}): ${shardCells.length}/${totalMatrixCells} cells\n`);
+    } else {
+      logStream.write(`Testigator replay — plan '${plan.id}' against ${plan.targetUrl}\n`);
+    }
 
     const browserPool = new BrowserPool();
     const createFinding = createFindingFactory();
-    // Audit M-5: --timeout was parsed and never used — a hung replay blocked
-    // the Action until the job's own timeout. Abort the matrix at the
-    // deadline and fail the replay.
     const controller = new AbortController();
     let timedOut = false;
     const deadlineTimer = setTimeout(() => {
@@ -246,27 +270,27 @@ export async function replayMain(argv = process.argv) {
       controller.abort();
     }, opts.timeout);
     try {
+      const runId = `replay_${Date.now()}${opts.shard ? `_s${opts.shard.index}` : ''}`;
       const result = await runMatrix({
-        plan,
+        plan: effectivePlan,
+        ...(shardCells ? { cells: shardCells } : {}),
         browserPool,
         createFinding,
-        onEvent: (msg) => console.log(`  · ${msg}`),
+        onEvent: (msg) => logStream.write(`  · ${msg}\n`),
         signal: controller.signal,
         options: {
           dedup: true,
-          runId: `replay_${Date.now()}`,
+          runId,
+          screenshotsDir: shardStorage?.screenshotsDir || config.screenshotsDir,
+          evidenceDir: shardStorage?.evidenceDir || '',
+          coveredPages: fullCoveredPages,
           retryBeforeConfirm: true,
           crossCellAgreement: true,
           pageScopeAgreement: true,
-          // Audit H-2: without this the injection executor's non-loopback
-          // authorization gate never opens on the Action's preview targets.
           authorizedTarget: opts.authorizedTarget === true,
         },
       });
 
-      // Audit H-1: the check path fails the run when cells fail
-      // (runManager); replay scored the findings and exited 0 even when the
-      // matrix executed nothing ("PASS ... EXIT=0" on 0/1 cells).
       if (timedOut) {
         console.error(`ERROR: replay timed out after ${opts.timeout}ms — the matrix was aborted`);
         return EXIT_FAILURE;
@@ -287,9 +311,6 @@ export async function replayMain(argv = process.argv) {
 
       const findings = result.findings || [];
 
-      // Waivers — parity with `check --ignore-file`. Without this the GitHub
-      // Action gate (which runs replay) could never honour the team's
-      // waiver file, so local CI and the PR gate disagreed (audit M-5).
       let waiverResult = null;
       let gateFindings = findings;
       if (opts.ignoreFile) {
@@ -300,21 +321,53 @@ export async function replayMain(argv = process.argv) {
         for (const w of waiverResult.warnings) console.error(w);
       }
 
-      const score = calculateScore(findings, replayCoverage(plan, result) || {});
-      const summary = summarizeFindings(findings, result.stats?.totalCells ?? 0);
+      const coverage = replayCoverage(fullPlan, result);
+      const score = calculateScore(findings, coverage || {});
+      const summary = summarizeFindings(findings, totalMatrixCells ?? result.stats?.totalCells ?? 0);
       const gate = evaluateGate({ findings: gateFindings, score, failOn: opts.failOn, minScore: opts.minScore });
 
-      console.log('');
-      const shownScore = typeof score === 'number' ? Math.round(score * 10) / 10 : '—';
-      console.log(`Score: ${shownScore}/100 | Findings: ${findings.length}`);
+      const jsonReport = {
+        runId,
+        planId: fullPlan.id,
+        url: fullPlan.targetUrl,
+        status: 'completed',
+        score,
+        summary,
+        coverage: coverage || { pagesAttempted: fullCoveredPages.length, pagesScanned: fullCoveredPages.length },
+        coveredPages: fullCoveredPages,
+        pages: fullPlan.pages || [],
+        findings,
+        ...(opts.shard ? { shard: opts.shard } : {}),
+        ...(totalMatrixCells != null ? { totalMatrixCells } : {}),
+        matrixStats: result.stats,
+        failed: gate.failed,
+        timestamp: new Date().toISOString(),
+      };
+
+      if (opts.shardOut) {
+        await mkdir(path.dirname(path.resolve(opts.shardOut)), { recursive: true });
+        await writeFile(opts.shardOut, JSON.stringify(jsonReport, null, 2) + '\n', 'utf8');
+        logStream.write(`Wrote shard report to ${opts.shardOut}\n`);
+      }
+
       const waiverNote = waiverResult && waiverResult.waived.length > 0
         ? ` · waivers: ${waiverResult.waived.length} suppressed (--min-score still uses the unwaived run score)`
         : '';
-      console.log(`Gate: ${gate.reason}${waiverNote}`);
+
+      if (opts.format === 'json') {
+        process.stdout.write(JSON.stringify(jsonReport, null, 2) + '\n');
+        process.stderr.write(`Gate: ${gate.reason}${waiverNote}\n`);
+      } else {
+        console.log('');
+        const shownScore = typeof score === 'number' ? Math.round(score * 10) / 10 : '—';
+        console.log(`Score: ${shownScore}/100 | Findings: ${findings.length}`);
+        console.log(`Gate: ${gate.reason}${waiverNote}`);
+      }
+
       if (process.env.GITHUB_STEP_SUMMARY) {
         const { appendFile } = await import('node:fs/promises');
-        await appendFile(process.env.GITHUB_STEP_SUMMARY, markdownSummary(plan, { findings, score }, gate), 'utf8');
-        console.log('Job summary appended to $GITHUB_STEP_SUMMARY');
+        await appendFile(process.env.GITHUB_STEP_SUMMARY, markdownSummary(fullPlan, { findings, score }, gate), 'utf8');
+        logStream.write('Job summary appended to $GITHUB_STEP_SUMMARY\n');
       }
       return gate.exitCode;
     } finally {
@@ -325,10 +378,24 @@ export async function replayMain(argv = process.argv) {
   } catch (err) {
     console.error(`ERROR: ${err.message}`);
     return EXIT_FAILURE;
+  } finally {
+    if (shardIsolated) {
+      try {
+        const { closeDatabase } = await import('../storage/db.js');
+        closeDatabase();
+      } catch { /* best effort */ }
+      if (prevDataDir === undefined) delete process.env.SQA_DATA_DIR;
+      else process.env.SQA_DATA_DIR = prevDataDir;
+      if (prevScreensDir === undefined) delete process.env.SQA_SCREENSHOTS_DIR;
+      else process.env.SQA_SCREENSHOTS_DIR = prevScreensDir;
+      if (prevDbPath === undefined) delete process.env.TESTIGATOR_DB_PATH;
+      else process.env.TESTIGATOR_DB_PATH = prevDbPath;
+      if (prevLegacyDbPath === undefined) delete process.env.QUALITYPILOT_DB_PATH;
+      else process.env.QUALITYPILOT_DB_PATH = prevLegacyDbPath;
+    }
   }
 }
 
-// ─── direct CLI entry (same pattern as check.js) ─────────────────────
 const invokedDirectly = Boolean(process.argv[1])
   && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {
