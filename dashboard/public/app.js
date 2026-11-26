@@ -151,6 +151,24 @@ const API = {
     method: 'DELETE',
     headers: authHeaders(),
   }).then(handleAuth).then(async r => ({ ok: r.ok, status: r.status, ...(await r.json().catch(() => ({}))) })),
+  // ─── visual baseline review (WS4.2) ───
+  baselines: () => fetch('/api/baselines', { headers: authHeaders() }).then(handleAuth).then(r => r.json()),
+  runBaselines: (runId) => fetch(`/api/runs/${encodeURIComponent(runId)}/baselines`, { headers: authHeaders() }).then(handleAuth).then(r => r.json()),
+  saveBaselineMasks: (id, maskSelectors) => fetch(`/api/baselines/${encodeURIComponent(id)}/masks`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ maskSelectors }),
+  }).then(handleAuth).then(async r => ({ ok: r.ok, status: r.status, ...(await r.json().catch(() => ({}))) })),
+  approveBaseline: (id, body = {}) => fetch(`/api/baselines/${encodeURIComponent(id)}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  }).then(handleAuth).then(async r => ({ ok: r.ok, status: r.status, ...(await r.json().catch(() => ({}))) })),
+  waiveBaseline: (id, body = {}) => fetch(`/api/baselines/${encodeURIComponent(id)}/waive`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  }).then(handleAuth).then(async r => ({ ok: r.ok, status: r.status, ...(await r.json().catch(() => ({}))) })),
 };
 
 const app = document.getElementById('app');
@@ -245,11 +263,14 @@ function navigate() {
     currentEventSource = null;
   }
 
-  const hash = window.location.hash.slice(1) || '/';
-  const [_, route, param] = hash.match(/^\/?(runs\/([^/]+)|trends|monitors)?\/?$/) || [];
+  const fullHash = window.location.hash.slice(1) || '/';
+  const [hashPath, queryString] = fullHash.split('?');
+  const hash = hashPath || '/';
+  const query = new URLSearchParams(queryString || '');
+  const [_, route, param] = hash.match(/^\/?(runs\/([^/]+)|trends|monitors|baselines)?\/?$/) || [];
 
   // Highlight active nav link
-  const active = route === 'trends' ? 'trends' : route === 'monitors' ? 'monitors' : 'runs';
+  const active = route === 'trends' ? 'trends' : route === 'monitors' ? 'monitors' : route === 'baselines' ? 'baselines' : 'runs';
   document.querySelectorAll('.nav-link').forEach(a => {
     a.classList.toggle('active', a.dataset.route === active);
   });
@@ -258,6 +279,8 @@ function navigate() {
     renderTrends();
   } else if (route === 'monitors') {
     renderMonitors();
+  } else if (route === 'baselines') {
+    renderBaselinesReview(query.get('runId'));
   } else if (route && route.startsWith('runs/')) {
     renderRunDetail(decodeURIComponent(param));
   } else {
@@ -675,6 +698,7 @@ async function renderRunDetail(runId) {
             ${isLive
               ? '<button type="button" class="btn btn-ghost" id="cancel-run">■ Stop scan</button>'
               : `<button type="button" class="btn btn-ghost" id="compare-run" title="Diff this run against the most recent earlier run">⇄ Compare with previous run</button>
+                 <a href="#/baselines?runId=${encodeURIComponent(run.runId)}" class="btn btn-ghost" title="Inspect visual diffs, edit mask selectors, and approve or waive baselines">👁 Review visual baselines</a>
                  <button type="button" class="btn btn-ghost" id="export-evidence" title="Download the WCAG conformance evidence as JSON">📋 Export WCAG evidence</button>
                  <button type="button" class="btn btn-ghost publish-btn" data-target="testrail" title="Publish results to TestRail">↗ Publish → TestRail</button>
                  <button type="button" class="btn btn-ghost publish-btn" data-target="xray" title="Publish results to Xray">↗ Publish → Xray</button>`}
@@ -690,6 +714,7 @@ async function renderRunDetail(runId) {
         <div class="stat"><span class="stat-icon">💡</span><div class="stat-value">${summary.recommendationCount ?? 0}</div><div class="stat-label">Recommendations</div></div>
       </div>
 
+      ${run.baselineDecisions?.length ? `<div class="baseline-note">👁 ${run.baselineDecisions.length} visual baseline decision(s) recorded (${run.baselineDecisions.slice(0, 3).map(d => `${escapeHtml(d.action)} ${escapeHtml(d.pageUrl)}`).join(' · ')})</div>` : ''}
       ${run.plan ? runPlanHtml(run.plan) : ''}
       ${emptyHtml}
     `;
@@ -1429,3 +1454,158 @@ async function renderTrends() {
 window.addEventListener('hashchange', navigate);
 refreshBtn.addEventListener('click', navigate);
 navigate();
+
+// ─── visual baseline review view (WS4.2) ─────────────────────────────
+
+async function renderBaselinesReview(runIdFilter = null) {
+  app.innerHTML = skeletonHtml(2);
+  try {
+    const data = runIdFilter ? await API.runBaselines(runIdFilter) : await API.baselines();
+    const items = data.baselines || [];
+
+    const cardsHtml = items.length ? items.map((b) => {
+      const statusTone = b.status === 'approved' ? 'good' : b.status === 'waived' ? 'warn' : 'muted';
+      const masksText = (b.maskSelectors || []).join(', ');
+      const diffPct = b.diffRatio != null ? `${(b.diffRatio * 100).toFixed(2)}% diff` : '';
+      return `
+        <article class="baseline-card" data-id="${b.id}" data-runid="${escapeHtml(b.runId || '')}">
+          <div class="baseline-head">
+            <div>
+              <strong>${escapeHtml(b.pageUrl)}</strong>
+              <span class="badge badge-neutral">${escapeHtml(b.viewport)}</span>
+              <span class="badge badge-neutral">${escapeHtml(b.label || 'default')}</span>
+              ${diffPct ? `<span class="badge badge-warn">${diffPct}</span>` : ''}
+            </div>
+            <span class="verdict verdict-${statusTone}">${escapeHtml(b.status || 'active')}</span>
+          </div>
+
+          <div class="baseline-images">
+            <div class="baseline-pane">
+              <div class="pane-label">Baseline</div>
+              ${b.baselineImageUrl ? `<img src="${escapeHtml(b.baselineImageUrl)}" alt="Baseline screenshot" loading="lazy" />` : '<div class="pane-empty">No image</div>'}
+            </div>
+            <div class="baseline-pane">
+              <div class="pane-label">Current capture</div>
+              ${b.actualImageUrl ? `<img src="${escapeHtml(b.actualImageUrl)}" alt="Current screenshot" loading="lazy" />` : '<div class="pane-empty">Same as baseline / none</div>'}
+            </div>
+            <div class="baseline-pane">
+              <div class="pane-label">Pixel diff</div>
+              ${b.diffImageUrl ? `<img src="${escapeHtml(b.diffImageUrl)}" alt="Visual diff screenshot" loading="lazy" />` : '<div class="pane-empty">No active diff</div>'}
+            </div>
+          </div>
+
+          <div class="baseline-controls">
+            <label class="mask-editor">
+              <span>Mask selectors (CSS selectors excluded during capture, comma-separated):</span>
+              <div class="mask-row">
+                <input type="text" class="baseline-masks-input" value="${escapeHtml(masksText)}" placeholder="[data-dynamic], time, .advertisement" />
+                <button type="button" class="btn btn-ghost save-masks-btn">Save masks</button>
+              </div>
+            </label>
+
+            <div class="baseline-actions">
+              <button type="button" class="btn btn-primary approve-baseline-btn">✓ Approve baseline</button>
+              <div class="waive-inline">
+                <input type="text" class="waive-reason-input" placeholder="Waiver reason (required to waive)" value="${escapeHtml(b.waiverReason || '')}" />
+                <input type="date" class="waive-expiry-input" value="${escapeHtml(b.waiverExpiresAt || '')}" title="Optional expiration date" />
+                <button type="button" class="btn btn-ghost waive-baseline-btn">⊘ Waive diff</button>
+              </div>
+            </div>
+
+            ${b.decidedAt ? `<div class="muted" style="font-size:0.8rem;">Last decision: <strong>${escapeHtml(b.status)}</strong> at ${formatDate(b.decidedAt)}${b.waiverReason ? ` — “${escapeHtml(b.waiverReason)}”` : ''}${b.waiverExpiresAt ? ` (expires ${escapeHtml(b.waiverExpiresAt)})` : ''}</div>` : ''}
+          </div>
+        </article>`;
+    }).join('') : `
+      <div class="empty-state">
+        <div class="empty-icon">👁</div>
+        <h2>No visual baselines recorded yet</h2>
+        <p>Run a scan with the <code>visual</code> executor to capture initial page baselines, then inspect diffs and mask dynamic regions here.</p>
+      </div>`;
+
+    app.innerHTML = `
+      <div class="page-head">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+          <div>
+            <h2>Visual Baseline Review${runIdFilter ? ` — Run ${escapeHtml(runIdFilter)}` : ''}</h2>
+            <p class="muted">Compare side-by-side diffs, edit CSS mask selectors for dynamic regions, and approve or waive changes across runs.</p>
+          </div>
+          ${runIdFilter ? `<a href="#/baselines" class="btn btn-ghost">Show all baselines</a>` : ''}
+        </div>
+      </div>
+      <div class="baseline-list">${cardsHtml}</div>`;
+
+    // Hydrate authenticated image URLs if SQA_API_TOKEN is in use
+    if (localStorage.getItem('sqa_token')) {
+      for (const img of app.querySelectorAll('.baseline-pane img')) {
+        img.src = await withAuth(img.getAttribute('src'));
+      }
+    }
+
+    app.querySelectorAll('.baseline-card').forEach((card) => {
+      const id = card.dataset.id;
+      const runId = card.dataset.runid || null;
+      const masksInput = card.querySelector('.baseline-masks-input');
+      const reasonInput = card.querySelector('.waive-reason-input');
+      const expiryInput = card.querySelector('.waive-expiry-input');
+
+      card.querySelector('.save-masks-btn')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        try {
+          const res = await API.saveBaselineMasks(id, masksInput.value);
+          if (!res.ok) throw new Error(res.error || `HTTP ${res.status}`);
+          toast('Mask selectors saved ✓', 'success');
+          renderBaselinesReview(runIdFilter);
+        } catch (err) {
+          toast(`Could not save masks: ${err.message}`, 'error');
+          btn.disabled = false;
+        }
+      });
+
+      card.querySelector('.approve-baseline-btn')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        try {
+          const res = await API.approveBaseline(id, {
+            runId,
+            maskSelectors: masksInput.value,
+            reason: reasonInput.value.trim() || 'Approved visual baseline change',
+          });
+          if (!res.ok) throw new Error(res.error || `HTTP ${res.status}`);
+          toast('Visual baseline approved ✓', 'success');
+          renderBaselinesReview(runIdFilter);
+        } catch (err) {
+          toast(`Could not approve baseline: ${err.message}`, 'error');
+          btn.disabled = false;
+        }
+      });
+
+      card.querySelector('.waive-baseline-btn')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        const reason = reasonInput.value.trim();
+        if (!reason) {
+          toast('Enter a waiver reason before waiving a visual diff.', 'error');
+          reasonInput.focus();
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const res = await API.waiveBaseline(id, {
+            runId,
+            reason,
+            expiresAt: expiryInput.value || null,
+            maskSelectors: masksInput.value,
+          });
+          if (!res.ok) throw new Error(res.error || `HTTP ${res.status}`);
+          toast('Visual diff waived ✓', 'success');
+          renderBaselinesReview(runIdFilter);
+        } catch (err) {
+          toast(`Could not waive diff: ${err.message}`, 'error');
+          btn.disabled = false;
+        }
+      });
+    });
+  } catch (err) {
+    app.innerHTML = `<div class="error">Failed to load visual baselines: ${escapeHtml(err.message)}</div>`;
+  }
+}

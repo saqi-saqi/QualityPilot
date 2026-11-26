@@ -1,5 +1,5 @@
 /**
- * dashboard/server.js — lightweight HTTP dashboard for QualityPilot.
+ * dashboard/server.js — lightweight HTTP dashboard for Testigator.
  *
  * Reads run JSON files from the runManager's data dir and serves:
  *   • Static HTML/CSS/JS at /            → dashboard UI
@@ -1149,6 +1149,297 @@ async function handleScreenshot(res, runId, filename) {
   await sendStaticFile(res, filePath);
 }
 
+// ─── visual baseline review (WS4.2) ──────────────────────────────────
+
+let _baselineStore = null;
+async function baselineStore() {
+  if (!_baselineStore) {
+    _baselineStore = await import('../src/storage/baselineStore.js');
+  }
+  return _baselineStore;
+}
+
+function parseVisualPathsFromFinding(finding) {
+  const vm = finding?.visualMeta || {};
+  const ev = String(finding?.evidence || '');
+  const pick = (re) => {
+    const m = ev.match(re);
+    return m ? m[1].replace(/\s*\(baseline store\)\s*$/i, '').trim() : null;
+  };
+  return {
+    baselinePath: vm.baselinePath || pick(/^Baseline:\s*(.+)$/m) || (finding?.ruleId === 'visual-baseline-captured' ? finding.screenshot : null),
+    actualPath: vm.actualPath || pick(/^Actual(?:\s*\(viewport\))?:\s*(.+)$/m) || null,
+    diffPath: vm.diffPath || pick(/^Diff image:\s*(.+)$/m) || (finding?.ruleId === 'visual-regression' ? finding.screenshot : null),
+    diffRatio: vm.diffRatio ?? null,
+    viewport: vm.viewport || null,
+    label: vm.label || 'default',
+    scopeId: vm.scopeId || null,
+    maskSelectors: vm.maskSelectors || null,
+  };
+}
+
+function isWithinAllowedMediaDir(targetPath) {
+  if (!targetPath) return false;
+  const resolved = path.resolve(targetPath);
+  const dataRoot = path.resolve(DATA_DIR);
+  const shotsRoot = path.resolve(SCREENSHOTS_DIR);
+  const inside = (root) => resolved === root || resolved.startsWith(root + path.sep);
+  return inside(shotsRoot) || inside(dataRoot);
+}
+
+function buildBaselineReviewItems({ baselines = [], runsList = [], decisions = [], targetRun = null } = {}) {
+  const isVisualRule = (f) =>
+    f?.ruleId === 'visual-regression' ||
+    f?.ruleId === 'visual-regression-viewport' ||
+    f?.ruleId === 'visual-dimensions-changed' ||
+    f?.ruleId === 'visual-baseline-captured';
+
+  const latestRunByPage = new Map();
+  const scanRuns = targetRun ? [targetRun] : runsList;
+  for (const r of scanRuns) {
+    for (const f of (r?.findings || [])) {
+      if (!isVisualRule(f) || !f.pageUrl) continue;
+      if (!latestRunByPage.has(f.pageUrl)) {
+        latestRunByPage.set(f.pageUrl, { runId: r.runId, finding: f });
+      }
+    }
+  }
+
+  const decisionsByBaseline = new Map();
+  for (const d of decisions) {
+    const key = d.baselineId || `${d.monitorId}::${d.pageUrl}::${d.viewport}::${d.label}`;
+    if (!decisionsByBaseline.has(key)) decisionsByBaseline.set(key, []);
+    decisionsByBaseline.get(key).push(d);
+  }
+
+  const items = [];
+  const seenBaselineIds = new Set();
+
+  for (const b of baselines) {
+    const match = latestRunByPage.get(b.pageUrl);
+    const parsed = match ? parseVisualPathsFromFinding(match.finding) : {};
+    if (targetRun && !match) continue;
+
+    seenBaselineIds.add(b.id);
+    const refRunId = match?.runId || targetRun?.runId || '';
+    const qs = refRunId ? `&runId=${encodeURIComponent(refRunId)}` : '';
+    const hist = decisionsByBaseline.get(b.id) || [];
+    items.push({
+      id: b.id,
+      monitorId: b.monitorId,
+      pageUrl: b.pageUrl,
+      viewport: b.viewport,
+      label: b.label,
+      status: b.status || 'active',
+      maskSelectors: b.maskSelectors || [],
+      waiverReason: b.waiverReason || null,
+      waiverExpiresAt: b.waiverExpiresAt || null,
+      decidedAt: b.decidedAt || null,
+      decidedBy: b.decidedBy || null,
+      runId: refRunId || null,
+      findingRuleId: match?.finding?.ruleId || null,
+      diffRatio: parsed.diffRatio ?? null,
+      hasDiff: Boolean(parsed.diffPath && parsed.diffPath !== 'unavailable'),
+      hasActual: Boolean(parsed.actualPath),
+      baselinePath: b.path || parsed.baselinePath || null,
+      actualPath: parsed.actualPath || null,
+      diffPath: (parsed.diffPath && parsed.diffPath !== 'unavailable') ? parsed.diffPath : null,
+      baselineImageUrl: (b.path || parsed.baselinePath) ? `/api/baselines/${b.id}/image?kind=baseline${qs}` : null,
+      actualImageUrl: parsed.actualPath ? `/api/baselines/${b.id}/image?kind=actual${qs}` : null,
+      diffImageUrl: (parsed.diffPath && parsed.diffPath !== 'unavailable') ? `/api/baselines/${b.id}/image?kind=diff${qs}` : null,
+      decisions: hist.slice(0, 10),
+    });
+  }
+
+  return items;
+}
+
+async function syncDecisionIntoRun(runId, { pageUrl, action, decision, reason, expiresAt, maskSelectors }) {
+  if (!runId) return;
+  try {
+    const rm = await runManager().catch(() => null);
+    const rs = await runStore();
+    const run = (rm?.getRun ? await rm.getRun(runId) : null) || (rs?.getRun ? rs.getRun(runId) : null);
+    if (!run || !rs || typeof rs.saveRun !== 'function') return;
+    const updatedFindings = (run.findings || []).map((f) => {
+      if (f.pageUrl !== pageUrl) return f;
+      if (f.ruleId !== 'visual-regression' && f.ruleId !== 'visual-regression-viewport' && f.ruleId !== 'visual-dimensions-changed') return f;
+      return {
+        ...f,
+        waived: true,
+        visualDecision: action,
+        waiverReason: reason || f.waiverReason || null,
+        ...(expiresAt ? { waiverExpiresAt: expiresAt } : {}),
+        ...(Array.isArray(maskSelectors) ? { maskSelectors } : {}),
+      };
+    });
+    const decisions = Array.isArray(run.baselineDecisions) ? [...run.baselineDecisions] : [];
+    if (decision) decisions.unshift(decision);
+    Object.assign(run, {
+      findings: updatedFindings,
+      baselineDecisions: decisions,
+      waivedCount: updatedFindings.filter((f) => f.waived).length,
+    });
+    await rs.saveRun(run);
+  } catch { /* best-effort run record sync */ }
+}
+
+async function handleListBaselines(res) {
+  try {
+    const bs = await baselineStore();
+    const rs = await runStore();
+    const baselines = bs.listBaselines();
+    const decisions = bs.listBaselineDecisions();
+    const summaries = rs && typeof rs.listRuns === 'function' ? rs.listRuns({ limit: 25 }) : [];
+    const runsList = [];
+    for (const s of summaries) {
+      const full = rs.getRun(s.runId);
+      if (full) runsList.push(full);
+    }
+    const items = buildBaselineReviewItems({ baselines, runsList, decisions });
+    sendJson(res, 200, { baselines: items, decisions });
+  } catch (err) {
+    sendError(res, 500, `Failed to list baselines: ${err.message}`);
+  }
+}
+
+async function handleGetRunBaselines(res, runId) {
+  try {
+    const { getRun } = await runManager();
+    const run = await getRun(runId);
+    if (!run) { sendError(res, 404, `Run not found: ${runId}`); return; }
+    const bs = await baselineStore();
+    const baselines = bs.listBaselines();
+    const decisions = bs.listBaselineDecisions();
+    const items = buildBaselineReviewItems({ baselines, decisions, targetRun: run });
+    sendJson(res, 200, { runId, baselines: items, decisions: run.baselineDecisions || [] });
+  } catch (err) {
+    sendError(res, 500, `Failed to list run baselines: ${err.message}`);
+  }
+}
+
+async function handleBaselineImage(res, idParam, url) {
+  const bs = await baselineStore();
+  const baseline = bs.getBaselineById(idParam);
+  if (!baseline) { sendError(res, 404, `Baseline not found: ${idParam}`); return; }
+
+  const kind = url.searchParams.get('kind') || 'baseline';
+  const runId = url.searchParams.get('runId');
+  let targetPath = null;
+
+  if (kind === 'baseline') {
+    targetPath = baseline.path;
+  } else {
+    const rm = await runManager().catch(() => null);
+    const rs = await runStore();
+    let candidateRun = runId && rm?.getRun ? await rm.getRun(runId) : null;
+    if (!candidateRun && runId && rs?.getRun) candidateRun = rs.getRun(runId);
+    if (!candidateRun && rs?.listRuns) {
+      for (const summary of rs.listRuns({ limit: 20 })) {
+        const full = rs.getRun(summary.runId);
+        if (full?.findings?.some((f) => f.pageUrl === baseline.pageUrl && (f.ruleId === 'visual-regression' || f.ruleId === 'visual-dimensions-changed'))) {
+          candidateRun = full;
+          break;
+        }
+      }
+    }
+    const matching = (candidateRun?.findings || []).find(
+      (f) => f.pageUrl === baseline.pageUrl && (f.ruleId === 'visual-regression' || f.ruleId === 'visual-regression-viewport' || f.ruleId === 'visual-dimensions-changed')
+    );
+    const parsed = matching ? parseVisualPathsFromFinding(matching) : {};
+    targetPath = kind === 'actual' ? parsed.actualPath : parsed.diffPath;
+  }
+
+  if (!targetPath || targetPath === 'unavailable' || !isWithinAllowedMediaDir(targetPath)) {
+    sendError(res, 404, `Baseline image (${kind}) not found`);
+    return;
+  }
+  await sendStaticFile(res, path.resolve(targetPath));
+}
+
+async function handleUpdateBaselineMasks(req, res, idParam) {
+  try {
+    const body = await readJsonBody(req);
+    const bs = await baselineStore();
+    const updated = bs.updateBaselineMasks(idParam, body.maskSelectors);
+    sendJson(res, 200, { ok: true, baseline: updated });
+  } catch (err) {
+    sendError(res, /not found/i.test(err.message) ? 404 : 400, err.message);
+  }
+}
+
+async function handleApproveBaseline(req, res, idParam) {
+  try {
+    const body = await readJsonBody(req);
+    const bs = await baselineStore();
+    const existing = bs.getBaselineById(idParam);
+    if (!existing) { sendError(res, 404, `Baseline not found: ${idParam}`); return; }
+
+    let actualPath = body.actualPath || null;
+    if (!actualPath && body.runId) {
+      const rm = await runManager().catch(() => null);
+      const rs = await runStore();
+      const run = (rm?.getRun ? await rm.getRun(body.runId) : null) || (rs?.getRun ? rs.getRun(body.runId) : null);
+      const matching = (run?.findings || []).find(
+        (f) => f.pageUrl === existing.pageUrl && (f.ruleId === 'visual-regression' || f.ruleId === 'visual-dimensions-changed')
+      );
+      if (matching) actualPath = parseVisualPathsFromFinding(matching).actualPath;
+    }
+
+    const result = bs.approveBaselineReview({
+      id: existing.id,
+      runId: body.runId || null,
+      newPath: actualPath,
+      maskSelectors: body.maskSelectors !== undefined ? body.maskSelectors : null,
+      reason: body.reason || 'Approved visual baseline change via dashboard',
+      decidedBy: body.decidedBy || 'dashboard-reviewer',
+    });
+
+    await syncDecisionIntoRun(body.runId, {
+      pageUrl: existing.pageUrl,
+      action: 'approved',
+      decision: result.decision,
+      reason: result.decision.waiverReason,
+      maskSelectors: result.baseline.maskSelectors,
+    });
+
+    sendJson(res, 200, { ok: true, ...result });
+  } catch (err) {
+    sendError(res, /not found/i.test(err.message) ? 404 : 400, err.message);
+  }
+}
+
+async function handleWaiveBaseline(req, res, idParam) {
+  try {
+    const body = await readJsonBody(req);
+    const bs = await baselineStore();
+    const existing = bs.getBaselineById(idParam);
+    if (!existing) { sendError(res, 404, `Baseline not found: ${idParam}`); return; }
+
+    const result = bs.waiveBaselineReview({
+      id: existing.id,
+      runId: body.runId || null,
+      reason: body.reason,
+      expiresAt: body.expiresAt || null,
+      maskSelectors: body.maskSelectors !== undefined ? body.maskSelectors : null,
+      decidedBy: body.decidedBy || 'dashboard-reviewer',
+    });
+
+    await syncDecisionIntoRun(body.runId, {
+      pageUrl: existing.pageUrl,
+      action: 'waived',
+      decision: result.decision,
+      reason: result.decision.waiverReason,
+      expiresAt: result.decision.waiverExpiresAt,
+      maskSelectors: result.baseline.maskSelectors,
+    });
+
+    sendJson(res, 200, { ok: true, ...result });
+  } catch (err) {
+    sendError(res, /not found/i.test(err.message) ? 404 : 400, err.message);
+  }
+}
+
 async function handleTrends(res) {
   try {
     const { listRuns } = await runManager();
@@ -1493,6 +1784,31 @@ async function handleRoute(req, res) {
     const screenshotMatch = pathname.match(/^\/api\/runs\/([^/]+)\/screenshots\/(.+)$/);
     if (screenshotMatch && method === 'GET') {
       return await handleScreenshot(res, screenshotMatch[1], screenshotMatch[2]);
+    }
+
+    // Visual baseline review routes (WS4.2)
+    if (pathname === '/api/baselines' && method === 'GET') {
+      return await handleListBaselines(res);
+    }
+    const runBaselinesMatch = pathname.match(/^\/api\/runs\/([^/]+)\/baselines$/);
+    if (runBaselinesMatch && method === 'GET') {
+      return await handleGetRunBaselines(res, runBaselinesMatch[1]);
+    }
+    const baselineImgMatch = pathname.match(/^\/api\/baselines\/([^/]+)\/image$/);
+    if (baselineImgMatch && method === 'GET') {
+      return await handleBaselineImage(res, baselineImgMatch[1], url);
+    }
+    const baselineMasksMatch = pathname.match(/^\/api\/baselines\/([^/]+)\/masks$/);
+    if (baselineMasksMatch && method === 'PUT') {
+      return await handleUpdateBaselineMasks(req, res, baselineMasksMatch[1]);
+    }
+    const baselineApproveMatch = pathname.match(/^\/api\/baselines\/([^/]+)\/approve$/);
+    if (baselineApproveMatch && method === 'POST') {
+      return await handleApproveBaseline(req, res, baselineApproveMatch[1]);
+    }
+    const baselineWaiveMatch = pathname.match(/^\/api\/baselines\/([^/]+)\/waive$/);
+    if (baselineWaiveMatch && method === 'POST') {
+      return await handleWaiveBaseline(req, res, baselineWaiveMatch[1]);
     }
 
     // Static files

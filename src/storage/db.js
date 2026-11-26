@@ -16,23 +16,27 @@ import fs from 'node:fs';
 import { config } from '../utils/config.js';
 
 // Honor config.dataDir (env SQA_DATA_DIR) so the DB lives with the other
-// stores; explicit QUALITYPILOT_DB_PATH / SQA_DB_PATH still win.
+// stores; explicit TESTIGATOR_DB_PATH / QUALITYPILOT_DB_PATH / SQA_DB_PATH still win.
 const DEFAULT_DB_PATH = path.join(
   path.resolve(config?.dataDir || path.join(process.cwd(), 'data')),
-  'qualitypilot.sqlite'
+  'testigator.sqlite'
 );
 
 /**
- * One-time legacy rename (QualityPilot rename, 2026-11-15): if the freshly
- * resolved DB path does not exist but the pre-rename `testflow.sqlite` does,
- * move it so existing local data (runs, monitors, queue) is not orphaned.
+ * Automatic legacy rename: if the freshly resolved DB path (`testigator.sqlite`)
+ * does not exist yet, migrate the newest legacy DB file (`qualitypilot.sqlite`
+ * or `testflow.sqlite`) in the same directory so local TestOps state stays intact.
  */
 function migrateLegacyDbFile(dbPath) {
   try {
     if (fs.existsSync(dbPath)) return;
-    const legacy = path.join(path.dirname(dbPath), 'testflow.sqlite');
-    if (fs.existsSync(legacy)) {
-      fs.renameSync(legacy, dbPath);
+    const dir = path.dirname(dbPath);
+    for (const legacyName of ['qualitypilot.sqlite', 'testflow.sqlite']) {
+      const legacy = path.join(dir, legacyName);
+      if (fs.existsSync(legacy)) {
+        fs.renameSync(legacy, dbPath);
+        return;
+      }
     }
   } catch {
     // Never block startup on the rename — a fresh DB is always valid.
@@ -145,9 +149,35 @@ CREATE TABLE IF NOT EXISTS baselines (
   label TEXT,
   path TEXT,
   hash TEXT,
+  mask_selectors_json TEXT,
+  review_status TEXT DEFAULT 'active',
+  waiver_reason TEXT,
+  waiver_expires_at TEXT,
+  decided_at TEXT,
+  decided_by TEXT,
   created_at TEXT,
   UNIQUE (monitor_id, page_url, viewport, label)
 );
+
+-- Baseline review decisions: audit trail of approve / waive / mask-update actions
+CREATE TABLE IF NOT EXISTS baseline_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  baseline_id INTEGER,
+  monitor_id TEXT,
+  run_id TEXT,
+  page_url TEXT NOT NULL,
+  viewport TEXT NOT NULL DEFAULT 'default',
+  label TEXT NOT NULL DEFAULT 'default',
+  action TEXT NOT NULL,
+  mask_selectors_json TEXT,
+  waiver_reason TEXT,
+  waiver_expires_at TEXT,
+  decided_by TEXT,
+  decided_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_baseline_decisions_monitor ON baseline_decisions(monitor_id, page_url);
+CREATE INDEX IF NOT EXISTS idx_baseline_decisions_run ON baseline_decisions(run_id);
 
 -- Plan drafts: human-in-the-loop review buffer for AI-authored test plans
 CREATE TABLE IF NOT EXISTS plan_drafts (
@@ -236,6 +266,40 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 2,
+    description: 'add baseline review columns (mask_selectors_json, review_status, waiver_*) and baseline_decisions audit table',
+    up(db) {
+      const cols = tableColumns(db, 'baselines');
+      if (cols.length > 0) {
+        if (!cols.includes('mask_selectors_json')) db.exec('ALTER TABLE baselines ADD COLUMN mask_selectors_json TEXT');
+        if (!cols.includes('review_status')) db.exec("ALTER TABLE baselines ADD COLUMN review_status TEXT DEFAULT 'active'");
+        if (!cols.includes('waiver_reason')) db.exec('ALTER TABLE baselines ADD COLUMN waiver_reason TEXT');
+        if (!cols.includes('waiver_expires_at')) db.exec('ALTER TABLE baselines ADD COLUMN waiver_expires_at TEXT');
+        if (!cols.includes('decided_at')) db.exec('ALTER TABLE baselines ADD COLUMN decided_at TEXT');
+        if (!cols.includes('decided_by')) db.exec('ALTER TABLE baselines ADD COLUMN decided_by TEXT');
+      }
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS baseline_decisions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          baseline_id INTEGER,
+          monitor_id TEXT,
+          run_id TEXT,
+          page_url TEXT NOT NULL,
+          viewport TEXT NOT NULL DEFAULT 'default',
+          label TEXT NOT NULL DEFAULT 'default',
+          action TEXT NOT NULL,
+          mask_selectors_json TEXT,
+          waiver_reason TEXT,
+          waiver_expires_at TEXT,
+          decided_by TEXT,
+          decided_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_baseline_decisions_monitor ON baseline_decisions(monitor_id, page_url);
+        CREATE INDEX IF NOT EXISTS idx_baseline_decisions_run ON baseline_decisions(run_id);
+      `);
+    },
+  },
 ];
 
 /**
@@ -284,7 +348,7 @@ export function getDatabase(customPath) {
   }
 
   if (!_dbInstance) {
-    const dbPath = process.env.QUALITYPILOT_DB_PATH || process.env.SQA_DB_PATH || DEFAULT_DB_PATH;
+    const dbPath = process.env.TESTIGATOR_DB_PATH || process.env.QUALITYPILOT_DB_PATH || process.env.SQA_DB_PATH || DEFAULT_DB_PATH;
     migrateLegacyDbFile(dbPath);
     const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) {

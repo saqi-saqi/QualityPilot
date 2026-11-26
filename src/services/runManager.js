@@ -39,12 +39,16 @@ let activeRuns = 0;
 const jobQueue = new JobQueue();
 
 const MAX_CONCURRENT_RUNS = Math.max(1, config.maxConcurrentRuns || 2);
-const DATA_DIR = path.resolve(config.dataDir || path.join(process.cwd(), 'data'));
-const SCREENSHOTS_DIR = path.join(DATA_DIR, 'screenshots');
+function getDataDir() {
+  return path.resolve(config.dataDir || path.join(process.cwd(), 'data'));
+}
+function getScreenshotsDir() {
+  return path.resolve(config.screenshotsDir || path.join(getDataDir(), 'screenshots'));
+}
 
 /** Evidence artifacts for a run (traces, videos) — Phase 4 evidence bundles. */
 export function evidenceDirFor(runId) {
-  return path.join(DATA_DIR, 'evidence', runId);
+  return path.join(getDataDir(), 'evidence', runId);
 }
 
 const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled'];
@@ -61,8 +65,8 @@ function isTerminal(status) {
 }
 
 export async function ensureDataDirs() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  await fs.mkdir(SCREENSHOTS_DIR, { recursive: true });
+  await fs.mkdir(getDataDir(), { recursive: true });
+  await fs.mkdir(getScreenshotsDir(), { recursive: true });
 }
 
 export function emitEvent(runId, message) {
@@ -449,13 +453,13 @@ export async function executeRun(runId) {
                 checkFindings = await checkNetwork(pages, createFinding, onEvent, siteOrigin);
                 break;
               case 'accessibility':
-                checkFindings = await checkAccessibility(pages, createFinding, onEvent, SCREENSHOTS_DIR, runId, signal, context);
+                checkFindings = await checkAccessibility(pages, createFinding, onEvent, getScreenshotsDir(), runId, signal, context);
                 break;
               case 'seo':
-                checkFindings = await checkSeo(pages, createFinding, onEvent, SCREENSHOTS_DIR, runId, signal);
+                checkFindings = await checkSeo(pages, createFinding, onEvent, getScreenshotsDir(), runId, signal);
                 break;
               case 'performance':
-                checkFindings = await checkPerformance(pages, createFinding, onEvent, SCREENSHOTS_DIR, runId, signal);
+                checkFindings = await checkPerformance(pages, createFinding, onEvent, getScreenshotsDir(), runId, signal);
                 break;
             }
             findings = findings.concat(checkFindings || []);
@@ -471,7 +475,7 @@ export async function executeRun(runId) {
 
       if (run.options.workflows?.length && !abortController.signal.aborted) {
         emitEvent(runId, 'Running workflow assertions');
-        const workflowRun = await checkWorkflows(context, run.options.workflows, createFinding, (msg) => emitEvent(runId, msg), SCREENSHOTS_DIR, runId, abortController.signal);
+        const workflowRun = await checkWorkflows(context, run.options.workflows, createFinding, (msg) => emitEvent(runId, msg), getScreenshotsDir(), runId, abortController.signal);
         findings = findings.concat(workflowRun.findings);
         run.workflowResults = workflowRun.results;
       }
@@ -591,11 +595,12 @@ export function processQueue() {
 export async function cleanupOldRuns(maxAgeMs = config.cleanupMaxAgeMs || 24 * 60 * 60 * 1000) {
   try {
     dbCleanupOldRuns(maxAgeMs);
-    if (existsSync(SCREENSHOTS_DIR)) {
+    const screenshotsDir = getScreenshotsDir();
+    if (existsSync(screenshotsDir)) {
       const now = Date.now();
-      const files = await fs.readdir(SCREENSHOTS_DIR);
+      const files = await fs.readdir(screenshotsDir);
       for (const file of files) {
-        const filePath = path.join(SCREENSHOTS_DIR, file);
+        const filePath = path.join(screenshotsDir, file);
         const stats = await fs.stat(filePath);
         if (now - stats.mtimeMs > maxAgeMs) {
           await fs.unlink(filePath).catch(() => {});
@@ -796,6 +801,9 @@ export function buildRunOptions(options = {}) {
     ...(options.previousRunId ? { previousRunId: options.previousRunId } : {}),
     ...(options.onlyNewFindings != null ? { onlyNewFindings: options.onlyNewFindings } : {}),
     ...(options.webhookUrl ? { webhookUrl: options.webhookUrl } : {}),
+    ...(options.shard ? { shard: options.shard } : {}),
+    ...(options.screenshotsDir ? { screenshotsDir: options.screenshotsDir } : {}),
+    ...(options.evidenceDir ? { evidenceDir: options.evidenceDir } : {}),
   };
 }
 
@@ -913,8 +921,8 @@ export function matrixOptionsForRun(run, { pages = [], runId, sessionCookie = nu
   return {
     dedup: options.dedup,
     concurrency: options.concurrency || 1,
-    screenshotsDir: SCREENSHOTS_DIR,
-    evidenceDir: runId ? evidenceDirFor(runId) : '',
+    screenshotsDir: options.screenshotsDir || getScreenshotsDir(),
+    evidenceDir: options.evidenceDir || (runId ? evidenceDirFor(runId) : ''),
     runId,
     roles: options.roles,
     coveredPages: (pages || []).map((p) => p.url),
@@ -929,9 +937,10 @@ export function matrixOptionsForRun(run, { pages = [], runId, sessionCookie = nu
     allowActiveFuzz: options.activeTesting && options.authorizedTarget,
     // Audit H-2: the injection executor gates non-loopback probing on this.
     authorizedTarget: options.authorizedTarget === true,
-    // Visual executor keys baselines on this (baselineStore is
-    // monitor-scoped; falls back to runId when absent).
+    // Visual executor keys baselines on monitorId when monitored, or siteOrigin
+    // across ad-hoc runs so baseline review decisions persist cleanly.
     ...(options.monitorId ? { monitorId: options.monitorId } : {}),
+    ...(options.visualScopeId ? { visualScopeId: options.visualScopeId } : (siteOrigin ? { visualScopeId: siteOrigin } : {})),
     // Authenticated API contract probing with the recorded session
     ...(sessionCookie ? { sessionCookie } : {}),
   };
@@ -1156,12 +1165,39 @@ export async function executeRunWithMatrix(runId, payload) {
       // Hard-timeout emergency cleanup — closes every pooled browser.
       activeCleanups.set(runId, () => browserPool.shutdown());
 
-      // ─── 5. Run the matrix ──────────────────────────────────────────
+      // ─── 5. Run the matrix (with optional CI shard partitioning) ───────
+      let effectivePlan = plan;
+      let effectiveCells = null;
+      let shardCoveredPages = pages.map(p => p.url).filter(Boolean);
+      let totalMatrixCells = null;
+      if (run.options.shard) {
+        const { planMatrix } = await import('../matrix/matrixPlanner.js');
+        const { partitionShardWorkload } = await import('../matrix/sharding.js');
+        const fullCells = planMatrix(plan, Array.isArray(run.options.roles) && run.options.roles.length ? run.options.roles : null);
+        const partitioned = partitionShardWorkload({ plan, cells: fullCells, shard: run.options.shard });
+        effectivePlan = partitioned.plan;
+        effectiveCells = partitioned.cells;
+        shardCoveredPages = partitioned.coveredPages;
+        totalMatrixCells = partitioned.totalMatrixCells;
+        run.shard = run.options.shard;
+        run.coveredPages = shardCoveredPages;
+        run.totalMatrixCells = totalMatrixCells;
+        emitEvent(runId, `Shard ${run.options.shard.spec} (${partitioned.mode}): ${effectiveCells.length}/${totalMatrixCells} cells, ${effectivePlan.pages?.length || 0}/${shardCoveredPages.length} pages`);
+      }
+
       emitEvent(runId, 'Running matrix');
       const matrixResult = await runMatrix({
-        plan, browserPool, createFinding, onEvent, signal,
-        options: matrixOptionsForRun(run, { pages, runId, sessionCookie }),
+        plan: effectivePlan,
+        ...(effectiveCells ? { cells: effectiveCells } : {}),
+        browserPool, createFinding, onEvent, signal,
+        options: {
+          ...matrixOptionsForRun(run, { pages, runId, sessionCookie }),
+          coveredPages: shardCoveredPages,
+        },
       });
+      if (totalMatrixCells != null && matrixResult.stats) {
+        matrixResult.stats.unshardedTotalCells = totalMatrixCells;
+      }
 
       // ─── 6. Close all pages + finalize ──────────────────────────────
       for (const p of pages) {
@@ -1171,6 +1207,34 @@ export async function executeRunWithMatrix(runId, payload) {
       run.findings = matrixResult.findings;
       run.matrixStats = matrixResult.stats;
       run.coverageFailures = matrixResult.coverageFailures || [];
+
+      // Apply persistent visual-baseline waivers and attach review decisions so
+      // both waivers and baseline approvals stay visible in the run record (WS4.2).
+      try {
+        const baselineStore = await import('../storage/baselineStore.js');
+        const visualScope = run.options?.monitorId || run.options?.visualScopeId || (() => {
+          try { return new URL(run.url).origin; } catch { return run.url; }
+        })();
+        const activeVisualWaivers = baselineStore.getActiveBaselineWaivers(visualScope);
+        if (activeVisualWaivers.length > 0) {
+          for (const f of run.findings) {
+            if (f.ruleId !== 'visual-regression' && f.ruleId !== 'visual-regression-viewport' && f.ruleId !== 'visual-dimensions-changed') continue;
+            const match = activeVisualWaivers.find((w) => w.pageUrl === f.pageUrl);
+            if (match) {
+              f.waived = true;
+              f.waiverReason = match.reason;
+              if (match.expiresAt) f.waiverExpiresAt = match.expiresAt;
+              f.waiverSource = 'baseline-review';
+            }
+          }
+        }
+        const decisions = baselineStore.listBaselineDecisions({ monitorId: visualScope });
+        if (decisions.length > 0) {
+          run.baselineDecisions = decisions;
+        }
+        const waivedCount = run.findings.filter((f) => f.waived).length;
+        if (waivedCount > 0) run.waivedCount = waivedCount;
+      } catch { /* baselineStore optional in unit mocks */ }
 
       const pagesAttempted = pages.length;
       const failedUrls = new Set((run.coverageFailures || []).map(f => f.pageUrl));
@@ -1219,6 +1283,7 @@ export async function executeRunWithMatrix(runId, payload) {
       }
       run.status = 'completed';
       run.completedAt = new Date().toISOString();
+      await saveRun(run);
       emitEvent(runId, `Completed — ${matrixResult.findings.length} findings, score ${run.score}`);
       emitDone(runId);
 

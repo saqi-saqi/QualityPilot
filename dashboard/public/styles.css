@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════
-   QualityPilot — design system
+   Testigator — design system
    Modern, persuasive, accessible. Dark-first with polished light mode.
    Zero dependencies — pure CSS.
    ═══════════════════════════════════════════════════════════════════ */
@@ -1169,3 +1169,92 @@ details.finding-group[open] .group-chevron { transform: rotate(180deg); }
 .monitor-edit-form .edit-url { flex: 2 1 240px; }
 .monitor-edit-form .edit-roles { flex: 1 1 200px; }
 .monitor-edit-form .form-opt input { width: 4.3rem; }
+
+/* ─── visual baseline review (WS4.2) ───────────────────────────────── */
+
+.baseline-list { display: flex; flex-direction: column; gap: 1.25rem; }
+
+.baseline-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.15rem 1.3rem;
+  box-shadow: var(--shadow-1);
+}
+
+.baseline-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.9rem;
+}
+
+.baseline-images {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.85rem;
+  margin-bottom: 1rem;
+}
+@media (max-width: 820px) {
+  .baseline-images { grid-template-columns: 1fr; }
+}
+
+.baseline-pane {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.pane-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.baseline-pane img {
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  object-fit: contain;
+  max-height: 360px;
+}
+
+.pane-empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 2rem 0.5rem;
+  text-align: center;
+}
+
+.baseline-controls { display: flex; flex-direction: column; gap: 0.75rem; }
+
+.mask-editor { display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.85rem; }
+
+.mask-row, .baseline-actions, .waive-inline {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.baseline-masks-input, .waive-reason-input, .waive-expiry-input {
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.baseline-masks-input { flex: 1 1 320px; }
+.waive-reason-input { flex: 1 1 240px; }

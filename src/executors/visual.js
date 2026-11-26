@@ -438,8 +438,9 @@ function viewportKey(viewport) {
 }
 
 function scopeIdFor(ctx) {
-  // monitorId scopes baselines for monitored runs; one-off runs key on runId
-  return ctx.options?.monitorId || ctx.monitorId || ctx.runId || 'default';
+  // monitorId scopes baselines for monitored runs; ad-hoc scans via runManager
+  // provide visualScopeId (site origin); direct unit tests fall back to runId.
+  return ctx.options?.monitorId || ctx.monitorId || ctx.options?.visualScopeId || ctx.runId || 'default';
 }
 
 /** Main executor entry — registered as 'visual' in the registry. */
@@ -474,8 +475,26 @@ export default async function visualExecutor(ctx) {
       await page.setViewportSize({ width: baseline.viewport.width, height: baseline.viewport.height }).catch(() => {});
     }
     try {
+      // Resolve any persisted baseline row BEFORE capture so user-configured
+      // mask selectors from dashboard baseline review apply during screenshot().
+      let storedRow = null;
+      if (store) {
+        try {
+          storedRow = await store.getLatestBaseline(
+            scopeId, baseline.pageUrl, viewportKey(baseline.viewport), baseline.label || 'default'
+          );
+        } catch { /* store read failed — fall back to plan masks */ }
+      }
+
+      const mergedMasks = (storedRow?.maskSelectors?.length)
+        ? storedRow.maskSelectors
+        : baseline.maskSelectors;
+      const effectiveBaseline = mergedMasks?.length
+        ? { ...baseline, maskSelectors: mergedMasks }
+        : baseline;
+
       const { buffer, filepath, hash } = await captureScreenshot(
-        page, baseline, ctx.screenshotsDir, ctx.runId
+        page, effectiveBaseline, ctx.screenshotsDir, ctx.runId
       );
 
       // Resolve the baseline to compare against:
@@ -483,16 +502,9 @@ export default async function visualExecutor(ctx) {
       //   2. persisted baselineStore row (monitorId + pageUrl + viewport + label)
       let baselinePath = baseline.baselinePath || null;
       let baselineFromStore = false;
-      if (!baselinePath && store) {
-        try {
-          const row = await store.getLatestBaseline(
-            scopeId, baseline.pageUrl, viewportKey(baseline.viewport), baseline.label || 'default'
-          );
-          if (row?.path) {
-            baselinePath = row.path;
-            baselineFromStore = true;
-          }
-        } catch { /* store read failed — treat as no baseline */ }
+      if (!baselinePath && storedRow?.path) {
+        baselinePath = storedRow.path;
+        baselineFromStore = true;
       }
 
       if (baselinePath) {
@@ -505,12 +517,13 @@ export default async function visualExecutor(ctx) {
 
         if (!baselineBuffer) {
           // Baseline reference missing — treat as first run + persist
+          let savedRow = null;
           if (store) {
-            await saveBaselineQuietly(store, {
-              scopeId, baseline, filepath, hash, ctx,
+            savedRow = await saveBaselineQuietly(store, {
+              scopeId, baseline: effectiveBaseline, filepath, hash, ctx,
             });
           }
-          findings.push(baselineCreatedFinding(ctx, baseline, filepath));
+          findings.push(baselineCreatedFinding(ctx, effectiveBaseline, filepath, savedRow, scopeId));
           continue;
         }
 
@@ -550,6 +563,18 @@ export default async function visualExecutor(ctx) {
               description: `Pixel diff ${(overlap.diffRatio * 100).toFixed(2)}% of the overlapping region (${overlap.width}x${overlap.height}) exceeds threshold ${(threshold * 100).toFixed(2)}%. Dimensions changed, so only the shared region was compared.`,
               evidence: `Baseline: ${baselinePath}${baselineFromStore ? ' (baseline store)' : ''}\nActual: ${filepath}\nDiff image: ${diffFilepath || 'unavailable'}\nDiff pixels: ${overlap.diffPixelCount} / ${(overlap.diffRatio * 100).toFixed(2)}%`,
               ...(diffFilepath ? { screenshot: diffFilepath } : {}),
+              visualMeta: {
+                baselineId: storedRow?.id ?? null,
+                scopeId,
+                pageUrl: baseline.pageUrl,
+                viewport: viewportKey(baseline.viewport),
+                label: baseline.label || 'default',
+                baselinePath,
+                actualPath: filepath,
+                diffPath: diffFilepath || null,
+                maskSelectors: mergedMasks || [],
+                diffRatio: overlap.diffRatio,
+              },
               suggestedFix: 'If the change is intentional, update the baseline. Otherwise, restore the original layout.',
             }));
           }
@@ -570,6 +595,18 @@ export default async function visualExecutor(ctx) {
             description: `Pixel diff ${(comparison.diffRatio * 100).toFixed(2)}% exceeds threshold ${(threshold * 100).toFixed(2)}%.`,
             evidence: `Baseline: ${baselinePath}${baselineFromStore ? ' (baseline store)' : ''}\nActual: ${filepath}\nDiff image: ${diffFilepath || 'unavailable'}\nDiff pixels: ${comparison.diffPixelCount} / ${(comparison.diffRatio * 100).toFixed(2)}%`,
             ...(diffFilepath ? { screenshot: diffFilepath } : {}),
+            visualMeta: {
+              baselineId: storedRow?.id ?? null,
+              scopeId,
+              pageUrl: baseline.pageUrl,
+              viewport: viewportKey(baseline.viewport),
+              label: baseline.label || 'default',
+              baselinePath,
+              actualPath: filepath,
+              diffPath: diffFilepath || null,
+              maskSelectors: mergedMasks || [],
+              diffRatio: comparison.diffRatio,
+            },
             suggestedFix: 'If the change is intentional, update the baseline. Otherwise, restore the original layout.',
           }));
         }
@@ -599,12 +636,13 @@ export default async function visualExecutor(ctx) {
       } else {
         // First run — this screenshot IS the new baseline. Persist it so
         // future runs diff against it instead of re-baselining forever.
+        let savedRow = null;
         if (store) {
-          await saveBaselineQuietly(store, { scopeId, baseline, filepath, hash, ctx });
+          savedRow = await saveBaselineQuietly(store, { scopeId, baseline: effectiveBaseline, filepath, hash, ctx });
         } else {
           ctx.onEvent?.(`No baseline store available — baseline for ${baseline.pageUrl} captured at ${filepath} (not persisted; set plan.baselinePath or provide baselineStore)`);
         }
-        findings.push(baselineCreatedFinding(ctx, baseline, filepath));
+        findings.push(baselineCreatedFinding(ctx, effectiveBaseline, filepath, savedRow, scopeId));
       }
     } catch (err) {
       if (ctx.recordPageFailure) {
@@ -635,21 +673,24 @@ export default async function visualExecutor(ctx) {
 
 async function saveBaselineQuietly(store, { scopeId, baseline, filepath, hash, ctx }) {
   try {
-    await store.saveBaseline({
+    const saved = await store.saveBaseline({
       monitorId: scopeId,
       pageUrl: baseline.pageUrl,
       viewport: viewportKey(baseline.viewport),
       label: baseline.label || 'default',
       path: filepath,
       hash,
+      ...(Array.isArray(baseline.maskSelectors) ? { maskSelectors: baseline.maskSelectors } : {}),
     });
     ctx.onEvent?.(`Baseline persisted for ${baseline.pageUrl} (${viewportKey(baseline.viewport)})`);
+    return saved;
   } catch (err) {
     ctx.onEvent?.(`Failed to persist baseline for ${baseline.pageUrl}: ${err.message}`);
+    return null;
   }
 }
 
-function baselineCreatedFinding(ctx, baseline, filepath) {
+function baselineCreatedFinding(ctx, baseline, filepath, savedRow = null, scopeId = null) {
   return ctx.createFinding({
     title: `Visual baseline created: ${baseline.pageUrl}`,
     severity: 'info',
@@ -664,6 +705,18 @@ function baselineCreatedFinding(ctx, baseline, filepath) {
     pageUrl: baseline.pageUrl,
     description: `First-run baseline stored at ${filepath}. Future runs will diff against this instead of re-baselining.`,
     screenshot: filepath,
+    ...(scopeId ? {
+      visualMeta: {
+        baselineId: savedRow?.id ?? null,
+        scopeId,
+        pageUrl: baseline.pageUrl,
+        viewport: viewportKey(baseline.viewport),
+        label: baseline.label || 'default',
+        baselinePath: filepath,
+        actualPath: filepath,
+        maskSelectors: baseline.maskSelectors || [],
+      },
+    } : {}),
   });
 }
 
