@@ -1,0 +1,171 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "NovaOps QA-Bench API",
+    "version": "1.0.0",
+    "description": "Version-locked API surface for QualityPilot QA-Bench multi-role benchmark."
+  },
+  "paths": {
+    "/api/health": {
+      "get": {
+        "summary": "Public liveness check (FP control)",
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    },
+    "/api/projects/search": {
+      "get": {
+        "summary": "Search workspace projects (seeded SQL error leak on clause closer)",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "example": "alpha" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Project matches" }
+        }
+      }
+    },
+    "/api/reports/export": {
+      "post": {
+        "summary": "Export filtered reports (seeded POST body SQLi tautology bypass)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "filter": { "type": "string", "example": "invalid_seed_filter" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Export rows" }
+        }
+      }
+    },
+    "/api/billing/summary": {
+      "get": {
+        "summary": "Billing summary (seeded 500 regression)",
+        "responses": {
+          "200": { "description": "Billing totals" }
+        }
+      }
+    },
+    "/api/projects/active": {
+      "get": {
+        "summary": "Active workspace projects (seeded schema drift regression)",
+        "responses": {
+          "200": { "description": "Active project list" }
+        }
+      }
+    },
+    "/api/deployments/latest": {
+      "get": {
+        "summary": "Latest deployment health (seeded boolean-to-string schema drift)",
+        "responses": {
+          "200": { "description": "Deployment status" }
+        }
+      }
+    },
+    "/api/webhooks/ping": {
+      "post": {
+        "summary": "Webhook delivery test (seeded 502 regression)",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "event": { "type": "string", "example": "deploy.check" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Ping acknowledged" }
+        }
+      }
+    },
+    "/api/user/profile": {
+      "get": {
+        "summary": "Authenticated user profile (seeded schema mismatch for authenticated session)",
+        "responses": {
+          "200": { "description": "Current user profile" }
+        }
+      }
+    },
+    "/api/user/notifications": {
+      "get": {
+        "summary": "User notifications feed (seeded 500 regression)",
+        "responses": {
+          "200": { "description": "Notification list" }
+        }
+      }
+    },
+    "/api/orders/estimate": {
+      "post": {
+        "summary": "Seat pricing estimator (seeded fuzz 500 on oversize/negative inputs)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "seats": { "type": "string", "example": "5" },
+                  "note": { "type": "string", "example": "team" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Estimate total" }
+        }
+      }
+    },
+    "/api/orders/private": {
+      "get": {
+        "summary": "Session-gated private orders (FP control: proper 401 when anon, 200 when logged in)",
+        "responses": {
+          "200": { "description": "User orders" },
+          "401": { "description": "Authentication required" }
+        }
+      }
+    },
+    "/api/analytics/heavy": {
+      "get": {
+        "summary": "Heavy analytics rollup (seeded 1100ms latency regression)",
+        "responses": {
+          "200": { "description": "Analytics rollup" }
+        }
+      }
+    },
+    "/api/admin/audit-settings": {
+      "get": {
+        "summary": "Admin audit configuration (seeded missing authz check)",
+        "responses": {
+          "200": { "description": "Audit settings" }
+        }
+      }
+    },
+    "/api/admin/billing-keys": {
+      "get": {
+        "summary": "Admin billing integration keys (seeded missing authz check)",
+        "responses": {
+          "200": { "description": "Billing key metadata" }
+        }
+      }
+    }
+  }
+}

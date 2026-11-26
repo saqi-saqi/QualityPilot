@@ -1,0 +1,129 @@
+{
+  "benchmark": "juiceshop-recall",
+  "tooling": {
+    "version": "0.5.0",
+    "commit": "f66d9015d152fc08522b136ba379a2289c495c33",
+    "dirty": true
+  },
+  "groundtruth": "groundtruth-juiceshop.json",
+  "run": {
+    "runId": "run_matrix_1795515851938_53b7275d",
+    "status": "completed",
+    "score": 0,
+    "url": "http://127.0.0.1:3000"
+  },
+  "params": {
+    "baseUrl": "http://127.0.0.1:3000",
+    "maxPages": 12,
+    "maxDepth": 2,
+    "timeout": 900000,
+    "minRecall": 1
+  },
+  "wallTimeMs": 189465,
+  "recall": 1,
+  "scoredCount": 10,
+  "detectedCount": 10,
+  "missed": [],
+  "staleExpectations": [],
+  "mustNotFindViolations": [],
+  "observational": [
+    {
+      "ruleId": "visual-regression-viewport",
+      "count": 15,
+      "severity": "low",
+      "detectorSample": "network"
+    },
+    {
+      "ruleId": "broken-link-404",
+      "count": 11,
+      "severity": "info",
+      "detectorSample": "links"
+    },
+    {
+      "ruleId": "visual-baseline-captured",
+      "count": 9,
+      "severity": "info",
+      "detectorSample": "network"
+    },
+    {
+      "ruleId": "perf-budget-TBT",
+      "count": 8,
+      "severity": "medium",
+      "detectorSample": "performance"
+    },
+    {
+      "ruleId": "axe-color-contrast",
+      "count": 6,
+      "severity": "serious",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "axe-label-content-name-mismatch",
+      "count": 5,
+      "severity": "serious",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "axe-label",
+      "count": 3,
+      "severity": "critical",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "axe-link-in-text-block",
+      "count": 2,
+      "severity": "serious",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "perf-budget-CLS",
+      "count": 2,
+      "severity": "high",
+      "detectorSample": "performance"
+    },
+    {
+      "ruleId": "api-status-mismatch",
+      "count": 1,
+      "severity": "low",
+      "detectorSample": "network"
+    },
+    {
+      "ruleId": "axe-aria-prohibited-attr",
+      "count": 1,
+      "severity": "serious",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "axe-document-title",
+      "count": 1,
+      "severity": "serious",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "axe-html-has-lang",
+      "count": 1,
+      "severity": "serious",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "axe-button-name",
+      "count": 1,
+      "severity": "critical",
+      "detectorSample": "accessibility"
+    },
+    {
+      "ruleId": "visual-regression",
+      "count": 1,
+      "severity": "medium",
+      "detectorSample": "network"
+    }
+  ],
+  "findingsTotal": 78,
+  "events": [
+    {
+      "t": "2026-11-24T10:24:11.289Z",
+      "m": "running check CLI: http://127.0.0.1:3000 (pages 12, depth 2, timeout 900000ms)"
+    }
+  ],
+  "finishedAt": "2026-11-24T10:27:20.856Z"
+}

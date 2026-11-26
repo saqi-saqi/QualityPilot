@@ -1,0 +1,15 @@
+{
+  "name": "qualitypilot-qa-bench",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Reproducible, version-locked multi-role modern web application benchmark fixture with 58 seeded regressions and 5 false-positive controls for QualityPilot.",
+  "type": "module",
+  "main": "server.js",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "start:clean": "node server.js --clean"
+  }
+}

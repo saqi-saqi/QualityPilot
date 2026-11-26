@@ -1,0 +1,575 @@
+{
+  "meta": {
+    "target": "NovaOps Workspace Portal (benchmark/qa-bench v1.0.0)",
+    "version": "1.0.0",
+    "roles": ["anon", "user", "admin"],
+    "seededRegressionCount": 58,
+    "falsePositiveControlCount": 5,
+    "domains": ["a11y", "security", "api_runtime", "e2e", "visual", "perf"]
+  },
+  "expected": [
+    {
+      "id": "QB-A11Y-01",
+      "domain": "a11y",
+      "role": "anon",
+      "ruleId": "axe-image-alt",
+      "route": "/",
+      "severity": "medium",
+      "description": "Hero brand logo <img> on / omits alt attribute"
+    },
+    {
+      "id": "QB-A11Y-02",
+      "domain": "a11y",
+      "role": "anon",
+      "ruleId": "axe-label",
+      "route": "/",
+      "severity": "medium",
+      "description": "Newsletter email input on / omits <label> or aria-label"
+    },
+    {
+      "id": "QB-A11Y-03",
+      "domain": "a11y",
+      "role": "user",
+      "ruleId": "axe-button-name",
+      "route": "/workspace",
+      "severity": "medium",
+      "description": "Icon-only #quick-add-btn on /workspace lacks accessible name"
+    },
+    {
+      "id": "QB-A11Y-04",
+      "domain": "a11y",
+      "role": "user",
+      "ruleId": "axe-color-contrast",
+      "route": "/workspace",
+      "severity": "medium",
+      "description": "Archived pill badge on /workspace fails WCAG AA contrast (#9ca3af on #e5e7eb)"
+    },
+    {
+      "id": "QB-A11Y-05",
+      "domain": "a11y",
+      "role": "user",
+      "ruleId": "axe-link-name",
+      "route": "/workspace",
+      "severity": "medium",
+      "description": "Empty anchor to /reports on /workspace uses aria-hidden glyph with no accessible name"
+    },
+    {
+      "id": "QB-A11Y-06",
+      "domain": "a11y",
+      "role": "user",
+      "ruleId": "axe-document-title",
+      "route": "/settings",
+      "severity": "low",
+      "description": "/settings omits <title> element"
+    },
+    {
+      "id": "QB-A11Y-07",
+      "domain": "a11y",
+      "role": "user",
+      "ruleId": "axe-html-has-lang",
+      "route": "/settings",
+      "severity": "low",
+      "description": "/settings omits lang attribute on <html>"
+    },
+    {
+      "id": "QB-A11Y-08",
+      "domain": "a11y",
+      "role": "user",
+      "ruleId": "axe-select-name",
+      "route": "/settings",
+      "severity": "medium",
+      "description": "#region-select on /settings lacks accessible label"
+    },
+    {
+      "id": "QB-A11Y-09",
+      "domain": "a11y",
+      "role": "anon",
+      "ruleId": "axe-aria-required-attr",
+      "route": "/reports",
+      "severity": "medium",
+      "description": "/reports declares role=\"checkbox\" without required aria-checked attribute"
+    },
+    {
+      "id": "QB-A11Y-10",
+      "domain": "a11y",
+      "role": "anon",
+      "ruleId": "axe-aria-roles",
+      "route": "/reports",
+      "severity": "medium",
+      "description": "/reports uses invalid ARIA role=\"bogus-panel\""
+    },
+    {
+      "id": "QB-A11Y-11",
+      "domain": "a11y",
+      "role": "anon",
+      "ruleId": "axe-frame-title",
+      "route": "/reports",
+      "severity": "low",
+      "description": "/reports embeds <iframe> without title attribute"
+    },
+    {
+      "id": "QB-A11Y-12",
+      "domain": "a11y",
+      "role": "anon",
+      "ruleId": "axe-list",
+      "route": "/reports",
+      "severity": "low",
+      "description": "/reports nests <div class=\"orphan\"> directly inside <ul>"
+    },
+    {
+      "id": "QB-A11Y-13",
+      "domain": "a11y",
+      "role": "anon",
+      "ruleId": "axe-tabindex",
+      "route": "/checkout",
+      "severity": "low",
+      "description": "#promo-btn on /checkout sets positive tabindex=\"5\""
+    },
+    {
+      "id": "QB-A11Y-14",
+      "domain": "a11y",
+      "role": "anon",
+      "ruleId": "axe-nested-interactive",
+      "route": "/checkout",
+      "severity": "medium",
+      "description": "#edit-billing-btn on /checkout nests <a> inside <button>"
+    },
+
+    {
+      "id": "QB-SEC-01",
+      "domain": "security",
+      "role": "anon",
+      "ruleId": "transport-http",
+      "severity": "high",
+      "description": "Application served over unencrypted HTTP"
+    },
+    {
+      "id": "QB-SEC-02",
+      "domain": "security",
+      "role": "anon",
+      "ruleId": "header-content-security-policy",
+      "severity": "high",
+      "description": "Content-Security-Policy header absent"
+    },
+    {
+      "id": "QB-SEC-03",
+      "domain": "security",
+      "role": "anon",
+      "ruleId": "header-referrer-policy",
+      "severity": "low",
+      "description": "Referrer-Policy header absent"
+    },
+    {
+      "id": "QB-SEC-04",
+      "domain": "security",
+      "role": "anon",
+      "ruleId": "header-permissions-policy",
+      "severity": "low",
+      "description": "Permissions-Policy header absent"
+    },
+    {
+      "id": "QB-SEC-05",
+      "domain": "security",
+      "role": "anon",
+      "ruleId": "header-cross-origin-opener-policy",
+      "severity": "low",
+      "description": "Cross-Origin-Opener-Policy header absent"
+    },
+    {
+      "id": "QB-SEC-06",
+      "domain": "security",
+      "role": "anon",
+      "ruleId": "header-cross-origin-resource-policy",
+      "severity": "low",
+      "description": "Cross-Origin-Resource-Policy header absent"
+    },
+    {
+      "id": "QB-SEC-07",
+      "domain": "security",
+      "role": "anon",
+      "ruleId": "cookie-no-httponly",
+      "route": "/login",
+      "severity": "medium",
+      "description": "Set-Cookie qp_prefs on /login lacks HttpOnly attribute"
+    },
+    {
+      "id": "QB-SEC-08",
+      "domain": "security",
+      "role": "anon",
+      "ruleId": "cookie-no-samesite",
+      "route": "/login",
+      "severity": "medium",
+      "description": "Set-Cookie qp_prefs on /login lacks SameSite attribute"
+    },
+    {
+      "id": "QB-SEC-09",
+      "domain": "security",
+      "role": "anon",
+      "ruleId": "injection-sqli-error",
+      "route": "/api/projects/search",
+      "severity": "medium",
+      "description": "GET /api/projects/search?q=') leaks SQLITE_ERROR 500 stack trace"
+    },
+    {
+      "id": "QB-SEC-10",
+      "domain": "security",
+      "role": "anon",
+      "ruleId": "injection-sqli",
+      "route": "/api/reports/export",
+      "severity": "high",
+      "description": "POST /api/reports/export allows SQL tautology bypass from 400 to 200"
+    },
+    {
+      "id": "QB-SEC-11",
+      "domain": "security",
+      "role": "anon",
+      "ruleId": "injection-sqli",
+      "route": "/login",
+      "severity": "high",
+      "description": "/login form auth bypasses 401 -> 200 on email ' OR 1=1--"
+    },
+    {
+      "id": "QB-SEC-12",
+      "domain": "security",
+      "role": "anon",
+      "ruleId": "injection-xss-dom",
+      "route": "/#/search",
+      "severity": "high",
+      "description": "SPA search hash query reflected unescaped into #hash-search-sink innerHTML"
+    },
+    {
+      "id": "QB-SEC-13",
+      "domain": "security",
+      "role": "anon",
+      "ruleId": "authz-missing",
+      "route": "/api/admin/audit-settings",
+      "severity": "medium",
+      "description": "Admin API /api/admin/audit-settings returns 200 without authentication"
+    },
+    {
+      "id": "QB-SEC-14",
+      "domain": "security",
+      "role": "anon",
+      "ruleId": "authz-missing",
+      "route": "/api/admin/billing-keys",
+      "severity": "medium",
+      "description": "Admin API /api/admin/billing-keys returns 200 without authentication"
+    },
+
+    {
+      "id": "QB-API-01",
+      "domain": "api_runtime",
+      "role": "anon",
+      "ruleIds": ["api-status-mismatch", "network-first-party-500"],
+      "route": "/api/billing/summary",
+      "severity": "high",
+      "description": "GET /api/billing/summary regressed from 200 to 500"
+    },
+    {
+      "id": "QB-API-02",
+      "domain": "api_runtime",
+      "role": "anon",
+      "ruleId": "api-schema-mismatch",
+      "route": "/api/projects/active",
+      "severity": "medium",
+      "description": "GET /api/projects/active missing ownerEmail and returns totalCount as string"
+    },
+    {
+      "id": "QB-API-03",
+      "domain": "api_runtime",
+      "role": "anon",
+      "ruleId": "api-schema-mismatch",
+      "route": "/api/deployments/latest",
+      "severity": "medium",
+      "description": "GET /api/deployments/latest returns string 'yes' for boolean healthy"
+    },
+    {
+      "id": "QB-API-04",
+      "domain": "api_runtime",
+      "role": "anon",
+      "ruleId": "api-status-mismatch",
+      "route": "/api/webhooks/ping",
+      "severity": "high",
+      "description": "POST /api/webhooks/ping regressed from 200 to 502"
+    },
+    {
+      "id": "QB-API-05",
+      "domain": "api_runtime",
+      "role": "user",
+      "ruleId": "api-schema-mismatch",
+      "route": "/api/user/profile",
+      "severity": "medium",
+      "description": "Authenticated GET /api/user/profile drops required email and role fields"
+    },
+    {
+      "id": "QB-API-06",
+      "domain": "api_runtime",
+      "role": "user",
+      "ruleId": "api-status-mismatch",
+      "route": "/api/user/notifications",
+      "severity": "high",
+      "description": "Authenticated GET /api/user/notifications regressed to 500"
+    },
+    {
+      "id": "QB-FUZZ-01",
+      "domain": "api_runtime",
+      "role": "anon",
+      "ruleId": "fuzz-failure",
+      "route": "/checkout",
+      "textContains": "#estimate-note",
+      "severity": "high",
+      "description": "Checkout seat estimator form (#estimate-note -> POST /api/orders/estimate) crashes with 500 under oversize/SQL fuzz inputs"
+    },
+    {
+      "id": "QB-FUZZ-02",
+      "domain": "api_runtime",
+      "role": "user",
+      "ruleId": "fuzz-failure",
+      "route": "/workspace",
+      "severity": "high",
+      "description": "#new-project-form on /workspace triggers 500 crash when fuzzed"
+    },
+    {
+      "id": "QB-NET-01",
+      "domain": "api_runtime",
+      "role": "user",
+      "ruleId": "broken-link-404",
+      "route": "/workspace",
+      "textContains": "/docs/migration-v1",
+      "severity": "medium",
+      "description": "Link to /docs/migration-v1 on /workspace returns 404"
+    },
+    {
+      "id": "QB-NET-02",
+      "domain": "api_runtime",
+      "role": "anon",
+      "ruleId": "broken-link-500",
+      "route": "/",
+      "textContains": "/legacy-billing",
+      "severity": "medium",
+      "description": "Link to /legacy-billing on / returns 500"
+    },
+    {
+      "id": "QB-NET-03",
+      "domain": "api_runtime",
+      "role": "anon",
+      "ruleId": "network-first-party-404",
+      "route": "/reports",
+      "textContains": "missing-widget.json",
+      "severity": "medium",
+      "description": "/reports XHR fetches /api/telemetry/missing-widget.json returning 404"
+    },
+    {
+      "id": "QB-NET-04",
+      "domain": "api_runtime",
+      "role": "anon",
+      "ruleId": "network-first-party-404",
+      "route": "/reports",
+      "textContains": "missing-chart.png",
+      "severity": "medium",
+      "description": "/reports image /assets/missing-chart.png returns 404"
+    },
+    {
+      "id": "QB-CON-01",
+      "domain": "api_runtime",
+      "role": "user",
+      "ruleId": "console-error",
+      "route": "/workspace",
+      "textContains": "Failed to hydrate workspace quota widget",
+      "severity": "low",
+      "description": "/workspace logs console.error on load"
+    },
+    {
+      "id": "QB-CON-02",
+      "domain": "api_runtime",
+      "role": "anon",
+      "ruleId": "uncaught-exception",
+      "route": "/checkout",
+      "textContains": "currencySymbol",
+      "severity": "high",
+      "description": "/checkout throws uncaught TypeError reading currencySymbol"
+    },
+
+    {
+      "id": "QB-E2E-01",
+      "domain": "e2e",
+      "role": "user",
+      "ruleIds": ["e2e-flow-failure", "e2e-flow-selector-timeout"],
+      "flowName": "e2e-workspace-auth-banner",
+      "route": "/workspace",
+      "severity": "high",
+      "description": "Logged-in workspace greeting shows undefined instead of user@novaops.local"
+    },
+    {
+      "id": "QB-E2E-02",
+      "domain": "e2e",
+      "role": "anon",
+      "ruleIds": ["e2e-flow-failure", "e2e-flow-selector-timeout"],
+      "flowName": "e2e-checkout-total",
+      "route": "/checkout",
+      "severity": "high",
+      "description": "Checkout seat calculator renders Total: $NaN/mo instead of $147/mo"
+    },
+    {
+      "id": "QB-E2E-03",
+      "domain": "e2e",
+      "role": "user",
+      "ruleIds": ["e2e-flow-failure", "e2e-flow-selector-timeout"],
+      "flowName": "e2e-profile-save",
+      "route": "/settings",
+      "severity": "high",
+      "description": "Settings save reverts display name to Guest instead of persisting Ada Lovelace"
+    },
+    {
+      "id": "QB-E2E-04",
+      "domain": "e2e",
+      "role": "user",
+      "ruleIds": ["e2e-flow-failure", "e2e-flow-selector-timeout"],
+      "flowName": "e2e-workspace-filter",
+      "route": "/workspace",
+      "severity": "high",
+      "description": "Workspace filter returns 0 projects match for Core API"
+    },
+    {
+      "id": "QB-E2E-05",
+      "domain": "e2e",
+      "role": "user",
+      "ruleIds": ["e2e-flow-failure", "e2e-flow-selector-timeout"],
+      "flowName": "e2e-archive-modal",
+      "route": "/workspace",
+      "severity": "high",
+      "description": "Confirming archive modal fails to dismiss #confirm-modal"
+    },
+    {
+      "id": "QB-E2E-06",
+      "domain": "e2e",
+      "role": "anon",
+      "ruleIds": ["e2e-flow-failure", "e2e-flow-selector-timeout"],
+      "flowName": "e2e-reports-export",
+      "route": "/reports",
+      "severity": "high",
+      "description": "Reports CSV export shows error state instead of #export-ready"
+    },
+    {
+      "id": "QB-E2E-07",
+      "domain": "e2e",
+      "role": "admin",
+      "ruleIds": ["e2e-flow-failure", "e2e-flow-selector-timeout"],
+      "flowName": "e2e-admin-maintenance",
+      "route": "/admin",
+      "severity": "high",
+      "description": "Authenticated admin receives 403 Forbidden toggling maintenance mode"
+    },
+    {
+      "id": "QB-E2E-08",
+      "domain": "e2e",
+      "role": "anon",
+      "ruleIds": ["e2e-flow-failure", "e2e-flow-selector-timeout"],
+      "flowName": "e2e-onboarding-wizard",
+      "route": "/onboarding",
+      "severity": "high",
+      "description": "Onboarding Next button never reveals #wizard-step-2"
+    },
+
+    {
+      "id": "QB-VIS-01",
+      "domain": "visual",
+      "role": "anon",
+      "ruleIds": ["visual-regression", "visual-dimensions-changed"],
+      "route": "/",
+      "severity": "medium",
+      "description": "Hero banner regresses from dark slate card to tall yellow/crimson banner"
+    },
+    {
+      "id": "QB-VIS-02",
+      "domain": "visual",
+      "role": "anon",
+      "ruleIds": ["visual-regression", "visual-dimensions-changed"],
+      "route": "/pricing",
+      "severity": "medium",
+      "description": "Pricing Pro tier card shifts horizontally and recolors CTA red"
+    },
+    {
+      "id": "QB-VIS-03",
+      "domain": "visual",
+      "role": "anon",
+      "ruleIds": ["visual-regression", "visual-dimensions-changed"],
+      "route": "/checkout",
+      "severity": "medium",
+      "description": "Checkout summary renders glaring red error block overlay"
+    },
+    {
+      "id": "QB-VIS-04",
+      "domain": "visual",
+      "role": "anon",
+      "ruleId": "visual-dimensions-changed",
+      "route": "/reports",
+      "severity": "medium",
+      "description": "Reports page height expands by >700px with expanded yellow debug block"
+    },
+
+    {
+      "id": "QB-PERF-01",
+      "domain": "perf",
+      "role": "anon",
+      "ruleId": "perf-budget-TTFB",
+      "route": "/slow-dashboard",
+      "severity": "medium",
+      "description": "/slow-dashboard server response delays TTFB > 950ms (budget 800ms)"
+    },
+    {
+      "id": "QB-PERF-02",
+      "domain": "perf",
+      "role": "anon",
+      "ruleId": "perf-budget-LCP",
+      "route": "/slow-dashboard",
+      "severity": "high",
+      "description": "/slow-dashboard slow hero image delays LCP > 2600ms (budget 2500ms)"
+    },
+    {
+      "id": "QB-PERF-03",
+      "domain": "perf",
+      "role": "anon",
+      "ruleId": "perf-budget-pageSizeBytes",
+      "route": "/bloated-assets",
+      "severity": "medium",
+      "description": "/bloated-assets loads >3.4MB inline CSS asset (budget 3MB)"
+    },
+    {
+      "id": "QB-PERF-04",
+      "domain": "perf",
+      "role": "anon",
+      "ruleId": "api-latency-budget",
+      "route": "/api/analytics/heavy",
+      "severity": "low",
+      "description": "GET /api/analytics/heavy takes ~1100ms exceeding 250ms budget"
+    }
+  ],
+  "mustNotFind": [
+    {
+      "id": "QB-FP-01",
+      "description": "Clean semantic page /clean-health must never report any axe-* accessibility defect",
+      "match": { "rulePrefix": "axe-", "route": "/clean-health" }
+    },
+    {
+      "id": "QB-FP-02",
+      "description": "Escaped search route /search-safe must never report DOM XSS",
+      "match": { "rulePrefix": "injection-xss-dom", "route": "/search-safe" }
+    },
+    {
+      "id": "QB-FP-03",
+      "description": "Healthy endpoint /api/health must never fail status, schema, fuzz, or authz checks",
+      "match": { "route": "/api/health", "excludeSecurityHeaders": true }
+    },
+    {
+      "id": "QB-FP-04",
+      "description": "Session-protected /api/orders/private (401 anon / 200 user) must not fire authz-missing or injection-sqli*",
+      "match": { "rulePrefixes": ["authz-missing", "injection-sqli"], "route": "/api/orders/private" }
+    },
+    {
+      "id": "QB-FP-05",
+      "description": "Masked dynamic clock route /visual-masked must not fire visual-regression or visual-dimensions-changed",
+      "match": { "rulePrefix": "visual-", "route": "/visual-masked" }
+    }
+  ]
+}

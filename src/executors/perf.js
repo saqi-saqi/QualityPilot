@@ -275,24 +275,20 @@ export async function capturePerfMetrics(page, url, opts = {}) {
 
   // Ensure "always measured" metrics (LCP, FCP, TTFB) are never bare 0:
   // If measured and > 0, return the number. If not measured, mark "unmeasured"
-  const LCP = evalResults.measured.LCP && evalResults.LCP > 0
-    ? Math.round(evalResults.LCP)
-    : 'unmeasured';
-  const FCP = evalResults.measured.FCP && evalResults.FCP > 0
-    ? Math.round(evalResults.FCP)
-    : 'unmeasured';
-  const TTFB = evalResults.measured.TTFB && evalResults.TTFB > 0
-    ? Math.round(evalResults.TTFB)
-    : 'unmeasured';
+  const positiveMs = (val, isMeasured) => {
+    if (!isMeasured || val == null || val <= 0) return 'unmeasured';
+    return Math.max(1, Math.round(val));
+  };
+  const LCP = positiveMs(evalResults.LCP, evalResults.measured.LCP);
+  const FCP = positiveMs(evalResults.FCP, evalResults.measured.FCP);
+  const TTFB = positiveMs(evalResults.TTFB, evalResults.measured.TTFB);
   const CLS = evalResults.CLS;
   const TBT = evalResults.TBT;
   // INP-ish: worst observed interaction duration; 'unmeasured' when the page
   // produced no interaction-timing entries (same honest-unmeasured pattern
   // as the other metrics). Note: this approximates INP with the worst
   // interaction rather than the official 98th percentile.
-  const INP = evalResults.measured.INP && evalResults.INP > 0
-    ? Math.round(evalResults.INP)
-    : 'unmeasured';
+  const INP = positiveMs(evalResults.INP, evalResults.measured.INP);
 
   return {
     metrics: {

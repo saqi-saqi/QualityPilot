@@ -1,0 +1,587 @@
+{
+  "recordedAt": "2026-11-25T13:18:44.633Z",
+  "provenance": {
+    "version": "0.5.0",
+    "commitSha": "f66d9015d152fc08522b136ba379a2289c495c33"
+  },
+  "target": {
+    "target": "NovaOps Workspace Portal (benchmark/qa-bench v1.0.0)",
+    "version": "1.0.0",
+    "roles": [
+      "anon",
+      "user",
+      "admin"
+    ],
+    "seededRegressionCount": 58,
+    "falsePositiveControlCount": 5,
+    "domains": [
+      "a11y",
+      "security",
+      "api_runtime",
+      "e2e",
+      "visual",
+      "perf"
+    ]
+  },
+  "playwrightAgents": {
+    "status": "excluded",
+    "reason": "Playwright 1.63.0 `npx playwright init-agents --help` provides --loop choices (\"claude\", \"codex\", \"copilot\", \"opencode\", \"vscode\", \"vscode-legacy\") for interactive IDE coding agents rather than a standalone headless autonomous CLI scanner."
+  },
+  "runs": [
+    {
+      "id": "heuristic-check",
+      "label": "Heuristic Check (no LLM)",
+      "status": "completed",
+      "exitCode": 0,
+      "durationMs": 110560,
+      "command": "qualitypilot check http://127.0.0.1:55973 --openapi openapi.json --login qa-bench-roles --allow-private --max-pages 18 --max-depth 2 --concurrency 4 --timeout 360000 --fail-on none --format json (SQA_LLM_PROVIDER=mock)",
+      "evaluation": {
+        "denominator": 58,
+        "matchedCount": 41,
+        "missedCount": 17,
+        "recall": 0.7069,
+        "totalFindings": 121,
+        "fpGuardCount": 5,
+        "fpViolationCount": 0,
+        "fpViolations": [],
+        "byDomain": {
+          "a11y": {
+            "total": 14,
+            "matched": 14,
+            "recall": 1,
+            "missedIds": []
+          },
+          "security": {
+            "total": 14,
+            "matched": 14,
+            "recall": 1,
+            "missedIds": []
+          },
+          "api_runtime": {
+            "total": 14,
+            "matched": 6,
+            "recall": 0.4286,
+            "missedIds": [
+              "QB-API-01",
+              "QB-API-02",
+              "QB-API-03",
+              "QB-API-04",
+              "QB-API-05",
+              "QB-API-06",
+              "QB-NET-03",
+              "QB-NET-04"
+            ]
+          },
+          "e2e": {
+            "total": 8,
+            "matched": 0,
+            "recall": 0,
+            "missedIds": [
+              "QB-E2E-01",
+              "QB-E2E-02",
+              "QB-E2E-03",
+              "QB-E2E-04",
+              "QB-E2E-05",
+              "QB-E2E-06",
+              "QB-E2E-07",
+              "QB-E2E-08"
+            ]
+          },
+          "visual": {
+            "total": 4,
+            "matched": 4,
+            "recall": 1,
+            "missedIds": []
+          },
+          "perf": {
+            "total": 4,
+            "matched": 3,
+            "recall": 0.75,
+            "missedIds": [
+              "QB-PERF-04"
+            ]
+          }
+        },
+        "missed": [
+          {
+            "id": "QB-API-01",
+            "domain": "api_runtime",
+            "ruleId": [
+              "api-status-mismatch",
+              "network-first-party-500"
+            ],
+            "route": "/api/billing/summary",
+            "description": "GET /api/billing/summary regressed from 200 to 500"
+          },
+          {
+            "id": "QB-API-02",
+            "domain": "api_runtime",
+            "ruleId": "api-schema-mismatch",
+            "route": "/api/projects/active",
+            "description": "GET /api/projects/active missing ownerEmail and returns totalCount as string"
+          },
+          {
+            "id": "QB-API-03",
+            "domain": "api_runtime",
+            "ruleId": "api-schema-mismatch",
+            "route": "/api/deployments/latest",
+            "description": "GET /api/deployments/latest returns string 'yes' for boolean healthy"
+          },
+          {
+            "id": "QB-API-04",
+            "domain": "api_runtime",
+            "ruleId": "api-status-mismatch",
+            "route": "/api/webhooks/ping",
+            "description": "POST /api/webhooks/ping regressed from 200 to 502"
+          },
+          {
+            "id": "QB-API-05",
+            "domain": "api_runtime",
+            "ruleId": "api-schema-mismatch",
+            "route": "/api/user/profile",
+            "description": "Authenticated GET /api/user/profile drops required email and role fields"
+          },
+          {
+            "id": "QB-API-06",
+            "domain": "api_runtime",
+            "ruleId": "api-status-mismatch",
+            "route": "/api/user/notifications",
+            "description": "Authenticated GET /api/user/notifications regressed to 500"
+          },
+          {
+            "id": "QB-NET-03",
+            "domain": "api_runtime",
+            "ruleId": "network-first-party-404",
+            "route": "/reports",
+            "description": "/reports XHR fetches /api/telemetry/missing-widget.json returning 404"
+          },
+          {
+            "id": "QB-NET-04",
+            "domain": "api_runtime",
+            "ruleId": "network-first-party-404",
+            "route": "/reports",
+            "description": "/reports image /assets/missing-chart.png returns 404"
+          },
+          {
+            "id": "QB-E2E-01",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/workspace",
+            "description": "Logged-in workspace greeting shows undefined instead of user@novaops.local"
+          },
+          {
+            "id": "QB-E2E-02",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/checkout",
+            "description": "Checkout seat calculator renders Total: $NaN/mo instead of $147/mo"
+          },
+          {
+            "id": "QB-E2E-03",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/settings",
+            "description": "Settings save reverts display name to Guest instead of persisting Ada Lovelace"
+          },
+          {
+            "id": "QB-E2E-04",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/workspace",
+            "description": "Workspace filter returns 0 projects match for Core API"
+          },
+          {
+            "id": "QB-E2E-05",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/workspace",
+            "description": "Confirming archive modal fails to dismiss #confirm-modal"
+          },
+          {
+            "id": "QB-E2E-06",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/reports",
+            "description": "Reports CSV export shows error state instead of #export-ready"
+          },
+          {
+            "id": "QB-E2E-07",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/admin",
+            "description": "Authenticated admin receives 403 Forbidden toggling maintenance mode"
+          },
+          {
+            "id": "QB-E2E-08",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/onboarding",
+            "description": "Onboarding Next button never reveals #wizard-step-2"
+          },
+          {
+            "id": "QB-PERF-04",
+            "domain": "perf",
+            "ruleId": "api-latency-budget",
+            "route": "/api/analytics/heavy",
+            "description": "GET /api/analytics/heavy takes ~1100ms exceeding 250ms budget"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ollama-check",
+      "label": "Local Ollama Check (gemma:2b)",
+      "status": "completed",
+      "exitCode": 0,
+      "durationMs": 344812,
+      "command": "qualitypilot check http://127.0.0.1:55973 --openapi openapi.json --login qa-bench-roles --allow-private --max-pages 18 --max-depth 2 --concurrency 4 --timeout 360000 --llm-preset ollama --fail-on none --format json (OPENAI_MODEL=gemma:2b)",
+      "evaluation": {
+        "denominator": 58,
+        "matchedCount": 41,
+        "missedCount": 17,
+        "recall": 0.7069,
+        "totalFindings": 113,
+        "fpGuardCount": 5,
+        "fpViolationCount": 0,
+        "fpViolations": [],
+        "byDomain": {
+          "a11y": {
+            "total": 14,
+            "matched": 14,
+            "recall": 1,
+            "missedIds": []
+          },
+          "security": {
+            "total": 14,
+            "matched": 14,
+            "recall": 1,
+            "missedIds": []
+          },
+          "api_runtime": {
+            "total": 14,
+            "matched": 6,
+            "recall": 0.4286,
+            "missedIds": [
+              "QB-API-01",
+              "QB-API-02",
+              "QB-API-03",
+              "QB-API-04",
+              "QB-API-05",
+              "QB-API-06",
+              "QB-NET-03",
+              "QB-NET-04"
+            ]
+          },
+          "e2e": {
+            "total": 8,
+            "matched": 0,
+            "recall": 0,
+            "missedIds": [
+              "QB-E2E-01",
+              "QB-E2E-02",
+              "QB-E2E-03",
+              "QB-E2E-04",
+              "QB-E2E-05",
+              "QB-E2E-06",
+              "QB-E2E-07",
+              "QB-E2E-08"
+            ]
+          },
+          "visual": {
+            "total": 4,
+            "matched": 4,
+            "recall": 1,
+            "missedIds": []
+          },
+          "perf": {
+            "total": 4,
+            "matched": 3,
+            "recall": 0.75,
+            "missedIds": [
+              "QB-PERF-04"
+            ]
+          }
+        },
+        "missed": [
+          {
+            "id": "QB-API-01",
+            "domain": "api_runtime",
+            "ruleId": [
+              "api-status-mismatch",
+              "network-first-party-500"
+            ],
+            "route": "/api/billing/summary",
+            "description": "GET /api/billing/summary regressed from 200 to 500"
+          },
+          {
+            "id": "QB-API-02",
+            "domain": "api_runtime",
+            "ruleId": "api-schema-mismatch",
+            "route": "/api/projects/active",
+            "description": "GET /api/projects/active missing ownerEmail and returns totalCount as string"
+          },
+          {
+            "id": "QB-API-03",
+            "domain": "api_runtime",
+            "ruleId": "api-schema-mismatch",
+            "route": "/api/deployments/latest",
+            "description": "GET /api/deployments/latest returns string 'yes' for boolean healthy"
+          },
+          {
+            "id": "QB-API-04",
+            "domain": "api_runtime",
+            "ruleId": "api-status-mismatch",
+            "route": "/api/webhooks/ping",
+            "description": "POST /api/webhooks/ping regressed from 200 to 502"
+          },
+          {
+            "id": "QB-API-05",
+            "domain": "api_runtime",
+            "ruleId": "api-schema-mismatch",
+            "route": "/api/user/profile",
+            "description": "Authenticated GET /api/user/profile drops required email and role fields"
+          },
+          {
+            "id": "QB-API-06",
+            "domain": "api_runtime",
+            "ruleId": "api-status-mismatch",
+            "route": "/api/user/notifications",
+            "description": "Authenticated GET /api/user/notifications regressed to 500"
+          },
+          {
+            "id": "QB-NET-03",
+            "domain": "api_runtime",
+            "ruleId": "network-first-party-404",
+            "route": "/reports",
+            "description": "/reports XHR fetches /api/telemetry/missing-widget.json returning 404"
+          },
+          {
+            "id": "QB-NET-04",
+            "domain": "api_runtime",
+            "ruleId": "network-first-party-404",
+            "route": "/reports",
+            "description": "/reports image /assets/missing-chart.png returns 404"
+          },
+          {
+            "id": "QB-E2E-01",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/workspace",
+            "description": "Logged-in workspace greeting shows undefined instead of user@novaops.local"
+          },
+          {
+            "id": "QB-E2E-02",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/checkout",
+            "description": "Checkout seat calculator renders Total: $NaN/mo instead of $147/mo"
+          },
+          {
+            "id": "QB-E2E-03",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/settings",
+            "description": "Settings save reverts display name to Guest instead of persisting Ada Lovelace"
+          },
+          {
+            "id": "QB-E2E-04",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/workspace",
+            "description": "Workspace filter returns 0 projects match for Core API"
+          },
+          {
+            "id": "QB-E2E-05",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/workspace",
+            "description": "Confirming archive modal fails to dismiss #confirm-modal"
+          },
+          {
+            "id": "QB-E2E-06",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/reports",
+            "description": "Reports CSV export shows error state instead of #export-ready"
+          },
+          {
+            "id": "QB-E2E-07",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/admin",
+            "description": "Authenticated admin receives 403 Forbidden toggling maintenance mode"
+          },
+          {
+            "id": "QB-E2E-08",
+            "domain": "e2e",
+            "ruleId": [
+              "e2e-flow-failure",
+              "e2e-flow-selector-timeout"
+            ],
+            "route": "/onboarding",
+            "description": "Onboarding Next button never reveals #wizard-step-2"
+          },
+          {
+            "id": "QB-PERF-04",
+            "domain": "perf",
+            "ruleId": "api-latency-budget",
+            "route": "/api/analytics/heavy",
+            "description": "GET /api/analytics/heavy takes ~1100ms exceeding 250ms budget"
+          }
+        ]
+      }
+    },
+    {
+      "id": "replay-full-suite",
+      "label": "Replay Approved Plan (plan.json)",
+      "status": "completed",
+      "exitCode": 0,
+      "durationMs": 176273,
+      "command": "qualitypilot replay plan.json --url http://127.0.0.1:55973 --fail-on none --format json",
+      "evaluation": {
+        "denominator": 58,
+        "matchedCount": 52,
+        "missedCount": 6,
+        "recall": 0.8966,
+        "totalFindings": 69,
+        "fpGuardCount": 5,
+        "fpViolationCount": 0,
+        "fpViolations": [],
+        "byDomain": {
+          "a11y": {
+            "total": 14,
+            "matched": 14,
+            "recall": 1,
+            "missedIds": []
+          },
+          "security": {
+            "total": 14,
+            "matched": 14,
+            "recall": 1,
+            "missedIds": []
+          },
+          "api_runtime": {
+            "total": 14,
+            "matched": 8,
+            "recall": 0.5714,
+            "missedIds": [
+              "QB-NET-01",
+              "QB-NET-02",
+              "QB-NET-03",
+              "QB-NET-04",
+              "QB-CON-01",
+              "QB-CON-02"
+            ]
+          },
+          "e2e": {
+            "total": 8,
+            "matched": 8,
+            "recall": 1,
+            "missedIds": []
+          },
+          "visual": {
+            "total": 4,
+            "matched": 4,
+            "recall": 1,
+            "missedIds": []
+          },
+          "perf": {
+            "total": 4,
+            "matched": 4,
+            "recall": 1,
+            "missedIds": []
+          }
+        },
+        "missed": [
+          {
+            "id": "QB-NET-01",
+            "domain": "api_runtime",
+            "ruleId": "broken-link-404",
+            "route": "/workspace",
+            "description": "Link to /docs/migration-v1 on /workspace returns 404"
+          },
+          {
+            "id": "QB-NET-02",
+            "domain": "api_runtime",
+            "ruleId": "broken-link-500",
+            "route": "/",
+            "description": "Link to /legacy-billing on / returns 500"
+          },
+          {
+            "id": "QB-NET-03",
+            "domain": "api_runtime",
+            "ruleId": "network-first-party-404",
+            "route": "/reports",
+            "description": "/reports XHR fetches /api/telemetry/missing-widget.json returning 404"
+          },
+          {
+            "id": "QB-NET-04",
+            "domain": "api_runtime",
+            "ruleId": "network-first-party-404",
+            "route": "/reports",
+            "description": "/reports image /assets/missing-chart.png returns 404"
+          },
+          {
+            "id": "QB-CON-01",
+            "domain": "api_runtime",
+            "ruleId": "console-error",
+            "route": "/workspace",
+            "description": "/workspace logs console.error on load"
+          },
+          {
+            "id": "QB-CON-02",
+            "domain": "api_runtime",
+            "ruleId": "uncaught-exception",
+            "route": "/checkout",
+            "description": "/checkout throws uncaught TypeError reading currencySymbol"
+          }
+        ]
+      }
+    }
+  ]
+}
