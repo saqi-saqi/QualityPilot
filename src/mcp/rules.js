@@ -30,7 +30,7 @@ const RULES = {
   'api-error': {
     title: 'API endpoint failed',
     explanation: 'The endpoint request failed (network error or 5xx-class response).',
-    suggestedFix: 'Verify the endpoint is reachable and healthy from the environment QualityPilot runs in.',
+    suggestedFix: 'Verify the endpoint is reachable and healthy from the environment Testigator runs in.',
   },
 
   // ─── Console / runtime ───────────────────────────────────────────

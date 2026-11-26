@@ -16,6 +16,7 @@
  */
 import { sanitizeUrlForPrompt } from '../explorer/prompts.js';
 import { isUnauthenticatedProbe } from '../services/scoring.js';
+import { getNodeSignature } from '../matrix/matrixRunner.js';
 
 export { sanitizeUrlForPrompt as sanitizeUrl };
 const sanitizeUrl = sanitizeUrlForPrompt;
@@ -129,6 +130,9 @@ export function redactFinding(finding, verbosity = 'summary') {
 function getNodeSignatureLocal(finding) {
   if (finding.target) {
     return Array.isArray(finding.target) ? finding.target.join(' ') : String(finding.target);
+  }
+  if (finding.evidence || finding.title) {
+    return getNodeSignature(finding);
   }
   return '';
 }

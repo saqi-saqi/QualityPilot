@@ -16,14 +16,14 @@
 import { z } from 'zod';
 import { validateUrlSafe } from '../services/ssrf.js';
 import { sanitizeError } from './redact.js';
-import { buildMcpReport } from './reporting.js';
+import { buildMcpReport, enforceMcpPayloadBudget } from './reporting.js';
 import { explainRule } from './rules.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────
 
-/** Serialize a tool result as JSON text content. */
+/** Serialize a tool result as compact JSON text content (no whitespace bloat). */
 function jsonResult(obj) {
-  return { content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] };
+  return { content: [{ type: 'text', text: JSON.stringify(obj) }] };
 }
 
 /** Uniform error envelope: scrubbed message, no stack traces, ever. */
@@ -106,26 +106,28 @@ export const TOOL_DEFS = [
       if (!report) {
         return { pass: false, error: 'Internal report failed invariant validation — not returned.', validationErrors: validation.errors };
       }
-      const confirmed = report.confirmed;
+      const confirmed = report.confirmed || [];
+      const suspected = report.suspected || [];
       const hasCoverageFailure = (report.summary?.coverageFailures || 0) > 0 || (report.coverage?.pagesScanned || 0) === 0;
-      return {
-        pass: confirmed.length === 0 && !hasCoverageFailure,
+      return enforceMcpPayloadBudget({
+        pass: (report.summary?.confirmedBugs ?? confirmed.length) === 0 && !hasCoverageFailure,
         url: report.url,
         checked: run.options.checks,
         coverage: report.coverage,
-        confirmedCount: confirmed.length,
-        suspectedCount: report.suspected.length,
+        confirmedCount: report.summary?.confirmedBugs ?? confirmed.length,
+        suspectedCount: report.summary?.unauthenticatedProbes ?? suspected.length,
         confirmed,
-        suspected: report.suspected,
+        suspected,
+        ...(report.artifactPath ? { artifactPath: report.artifactPath } : {}),
         validationErrors: validation.errors.length ? validation.errors : undefined,
-      };
+      }, { runId: run.runId });
     }),
   },
 
   {
     name: 'start_full_scan',
     description:
-      'Start a full QualityPilot matrix scan (crawl + plan + browser × viewport matrix + all executors). ' +
+      'Start a full Testigator matrix scan (crawl + plan + browser × viewport matrix + all executors). ' +
       'Returns a job_id immediately; poll with get_scan_status, then fetch results with get_scan_report. ' +
       'Accepts only scan-shape options — credential/session material is rejected by design (use a monitor with record-once login for authenticated scans).',
     inputSchema: {
@@ -187,7 +189,7 @@ export const TOOL_DEFS = [
     description:
       'Structured report for a completed scan job. verbosity "summary" (default): counts, score, coverage, and CONFIRMED findings only, ' +
       'each as {rule, severity, url, selector, suggestedFix}. verbosity "full": everything including evidence (redacted). ' +
-      'The report is validated against QualityPilot\'s correctness invariants before being returned; a report that fails validation is never sent.',
+      'The report is validated against Testigator\'s correctness invariants before being returned; a report that fails validation is never sent.',
     inputSchema: {
       job_id: z.string().describe('The job_id from start_full_scan'),
       verbosity: z.enum(['summary', 'full']).optional().describe('Default "summary"'),
@@ -223,13 +225,14 @@ export const TOOL_DEFS = [
         return { pass: false, error: 'Internal report failed invariant validation — not returned.', validationErrors: validation.errors };
       }
       const hasCoverageFailure = (report.summary?.coverageFailures || 0) > 0 || (report.coverage?.pagesScanned || 0) === 0;
-      return {
-        pass: report.confirmed.length === 0 && !hasCoverageFailure,
+      return enforceMcpPayloadBudget({
+        pass: (report.summary?.confirmedBugs ?? report.confirmed.length) === 0 && !hasCoverageFailure,
         url: report.url,
-        confirmedCount: report.confirmed.length,
+        confirmedCount: report.summary?.confirmedBugs ?? report.confirmed.length,
         confirmed: report.confirmed,
+        ...(report.artifactPath ? { artifactPath: report.artifactPath } : {}),
         validationErrors: validation.errors.length ? validation.errors : undefined,
-      };
+      }, { runId: run.runId });
     }),
   },
 
@@ -282,16 +285,17 @@ export const TOOL_DEFS = [
           return { pass: false, error: 'Internal report failed invariant validation — not returned.', validationErrors: validation.errors };
         }
         const hasCoverageFailure = (report.summary?.coverageFailures || 0) > 0;
-        return {
-          pass: report.confirmed.length === 0 && !hasCoverageFailure,
+        return enforceMcpPayloadBudget({
+          pass: (report.summary?.confirmedBugs ?? report.confirmed.length) === 0 && !hasCoverageFailure,
           url: report.url,
           probed: endpoints.length,
-          confirmedCount: report.confirmed.length,
-          suspectedCount: report.suspected.length,
+          confirmedCount: report.summary?.confirmedBugs ?? report.confirmed.length,
+          suspectedCount: report.summary?.unauthenticatedProbes ?? report.suspected.length,
           confirmed: report.confirmed,
           suspected: report.suspected,
+          ...(report.artifactPath ? { artifactPath: report.artifactPath } : {}),
           validationErrors: validation.errors.length ? validation.errors : undefined,
-        };
+        }, { runId: report.runId });
       }
 
       // No endpoints given — observe traffic from a single page load, then replay.
@@ -303,16 +307,17 @@ export const TOOL_DEFS = [
         return { pass: false, error: 'Internal report failed invariant validation — not returned.', validationErrors: validation.errors };
       }
       const hasCoverageFailure = (report.summary?.coverageFailures || 0) > 0 || (report.coverage?.pagesScanned || 0) === 0;
-      return {
+      return enforceMcpPayloadBudget({
         pass: apiFindings.filter(f => f.confidence === 'confirmed').length === 0 && !hasCoverageFailure,
         url: report.url,
         mode: 'observed-traffic',
-        confirmedCount: report.confirmed.length,
-        suspectedCount: report.suspected.length,
+        confirmedCount: report.summary?.confirmedBugs ?? report.confirmed.length,
+        suspectedCount: report.summary?.unauthenticatedProbes ?? report.suspected.length,
         confirmed: report.confirmed,
         suspected: report.suspected,
+        ...(report.artifactPath ? { artifactPath: report.artifactPath } : {}),
         validationErrors: validation.errors.length ? validation.errors : undefined,
-      };
+      }, { runId: observedRun.runId });
     }),
   },
 
@@ -320,7 +325,7 @@ export const TOOL_DEFS = [
     name: 'explain_finding',
     description:
       'Plain-language explanation + suggested fix for a rule ID (e.g. from a prior quick_check/get_scan_report finding). ' +
-      'Covers QualityPilot rule IDs and the most common axe-core rules.',
+      'Covers Testigator rule IDs and the most common axe-core rules.',
     inputSchema: {
       rule_id: z.string().describe('Rule ID, e.g. "api-status-mismatch", "console-error", "color-contrast"'),
     },

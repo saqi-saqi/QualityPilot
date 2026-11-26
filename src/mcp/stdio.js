@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * mcp/stdio.js — QualityPilot MCP server entry point (stdio transport).
+ * mcp/stdio.js — Testigator MCP server entry point (stdio transport).
  *
  * Local-process-only by design: the agent spawns this as a subprocess and
  * speaks MCP over stdin/stdout. Nothing listens on the network. If an
@@ -8,8 +8,8 @@
  * MANDATORY before that ships — do not expose this server as-is.
  *
  * Register in the agent's .mcp.json:
- *   { "mcpServers": { "qualitypilot": { "command": "node",
- *       "args": ["<absolute-path>/qualitypilot/src/mcp/stdio.js"] } } }
+ *   { "mcpServers": { "testigator": { "command": "npx",
+ *       "args": ["-y", "--package=testigator", "testigator-mcp"] } } }
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -25,7 +25,7 @@ const PKG_VERSION = JSON.parse(
 ).version;
 
 const server = new McpServer({
-  name: 'qualitypilot',
+  name: 'testigator',
   version: PKG_VERSION,
 });
 
@@ -38,7 +38,7 @@ for (const tool of TOOL_DEFS) {
 }
 
 // Log to stderr only — stdout is the MCP protocol channel.
-console.error(`qualitypilot-mcp: starting with ${TOOL_DEFS.length} tools (stdio transport, local process only)`);
+console.error(`testigator-mcp: starting with ${TOOL_DEFS.length} tools (stdio transport, local process only)`);
 
 await server.connect(new StdioServerTransport());
-console.error('qualitypilot-mcp: connected');
+console.error('testigator-mcp: connected');
