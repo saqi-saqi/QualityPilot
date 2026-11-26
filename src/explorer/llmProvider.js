@@ -36,6 +36,10 @@ export function setDefaultProvider(provider) {
   defaultProvider = provider;
 }
 
+export function resetDefaultProvider() {
+  defaultProvider = null;
+}
+
 export function getDefaultProvider() {
   if (!defaultProvider) {
     defaultProvider = createProvider();
@@ -132,7 +136,12 @@ export class OpenAIProvider {
     this.name = 'openai';
     this.apiKey = opts.apiKey ?? process.env.OPENAI_API_KEY ?? '';
     this.baseUrl = (opts.baseUrl ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
-    this.model = opts.model ?? process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
+    // A preset may deliberately pass null ("the server names its own model");
+    // only an absent value falls back to the env/default.
+    this.model = opts.model !== undefined
+      ? opts.model
+      : (process.env.OPENAI_MODEL ?? 'gpt-4o-mini');
+    this.extraHeaders = opts.extraHeaders || {};
     this._fetch = opts.fetchImpl || globalThis.fetch;
   }
 
@@ -140,6 +149,9 @@ export class OpenAIProvider {
     try {
       if (!this.apiKey) {
         return { ok: false, error: 'OPENAI_API_KEY is not set' };
+      }
+      if (!this.model) {
+        return { ok: false, error: 'No model configured — set OPENAI_MODEL (or SQA_LLM_MODEL) to the model name your endpoint serves' };
       }
       if (typeof this._fetch !== 'function') {
         return { ok: false, error: 'No fetch implementation available (Node 18+ required)' };
@@ -168,6 +180,7 @@ export class OpenAIProvider {
       const response = await this._fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
+          ...this.extraHeaders,
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.apiKey}`,
         },
@@ -190,6 +203,175 @@ export class OpenAIProvider {
       return { ok: false, error: err.message || String(err) };
     }
   }
+}
+
+// ─── provider presets ────────────────────────────────────────────────
+
+/**
+ * First-class endpoints for the local-first LLM story.
+ *
+ * A preset is only a resolved configuration — the transport stays the single
+ * OpenAI-compatible OpenAIProvider, so every preset speaks the same
+ * /chat/completions dialect and no vendor SDK is involved.
+ *
+ * Precedence per field: <PRESET>_BASE_URL / <PRESET>_API_KEY → OPENAI_* →
+ * preset default. OPENAI_MODEL (or SQA_LLM_MODEL) overrides a preset model.
+ */
+export const LLM_PRESETS = {
+  ollama: {
+    label: 'Ollama (local)',
+    baseUrl: 'http://127.0.0.1:11434/v1',
+    baseUrlEnv: 'OLLAMA_BASE_URL',
+    apiKeyEnv: ['OLLAMA_API_KEY'],
+    // Ollama ignores the bearer token, but the client requires a non-empty one.
+    placeholderApiKey: 'ollama',
+    defaultModel: 'qwen2.5:7b',
+    contextWindowTokens: 4096,
+  },
+  vllm: {
+    label: 'vLLM (local)',
+    baseUrl: 'http://127.0.0.1:8000/v1',
+    baseUrlEnv: 'VLLM_BASE_URL',
+    apiKeyEnv: ['VLLM_API_KEY'],
+    // vLLM accepts any bearer token unless started with --api-key.
+    placeholderApiKey: 'EMPTY',
+    // The served model name is deployment-specific — never guess it.
+    defaultModel: null,
+    contextWindowTokens: null,
+  },
+  openrouter: {
+    label: 'OpenRouter (hosted, OpenAI-compatible)',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    baseUrlEnv: 'OPENROUTER_BASE_URL',
+    apiKeyEnv: ['OPENROUTER_API_KEY', 'OPENAI_API_KEY'],
+    defaultModel: 'openai/gpt-4o-mini',
+    contextWindowTokens: null,
+    extraHeaders: {
+      'HTTP-Referer': 'https://github.com/saqi-saqi/Testigator',
+      'X-Title': 'Testigator',
+    },
+  },
+  openai: {
+    label: 'OpenAI (hosted)',
+    baseUrl: 'https://api.openai.com/v1',
+    baseUrlEnv: 'OPENAI_BASE_URL',
+    apiKeyEnv: ['OPENAI_API_KEY'],
+    defaultModel: 'gpt-4o-mini',
+    contextWindowTokens: null,
+  },
+  byo: {
+    label: 'Bring your own OpenAI-compatible endpoint',
+    // No default: BYO means you supply the URL.
+    baseUrl: null,
+    baseUrlEnv: 'OPENAI_BASE_URL',
+    apiKeyEnv: ['OPENAI_API_KEY'],
+    placeholderApiKey: 'none',
+    defaultModel: null,
+    contextWindowTokens: null,
+  },
+};
+
+export const LLM_PRESET_NAMES = Object.keys(LLM_PRESETS);
+
+/**
+ * Warnings a preset should surface before the first call. Kept separate from
+ * resolvePreset so tests can assert the text without capturing console output.
+ */
+export function presetWarnings(name, env = process.env, model = null) {
+  const warnings = [];
+  if (env.SQA_LLM_NO_WARN) return warnings;
+
+  if (name === 'ollama' && !env.OLLAMA_CONTEXT_LENGTH) {
+    warnings.push(
+      'Ollama preset active: Ollama serves a small context by default (num_ctx — 4096 tokens on recent ' +
+      'versions, less on older ones) and older prompt tokens are dropped once it overflows. Raise it with ' +
+      'OLLAMA_CONTEXT_LENGTH=8192 (Ollama >= 0.6) or num_ctx in a Modelfile if plans come back truncated. ' +
+      'Silence with SQA_LLM_NO_WARN=1.'
+    );
+  }
+  if (name === 'vllm' && !model) {
+    warnings.push(
+      'vLLM preset has no model name — set OPENAI_MODEL to the model your server is serving ' +
+      '(vLLM does not choose one for you).'
+    );
+  }
+  if (name === 'openrouter' && !env.OPENROUTER_API_KEY && !env.OPENAI_API_KEY) {
+    warnings.push('OpenRouter preset has no API key — set OPENROUTER_API_KEY (or OPENAI_API_KEY).');
+  }
+  return warnings;
+}
+
+/**
+ * Resolve a preset name against an environment without constructing anything.
+ * Returns { ok: true, name, baseUrl, apiKey, model, extraHeaders, warnings }
+ * or { ok: false, error }.
+ */
+export function resolvePreset(name, env = process.env) {
+  const key = String(name || '').toLowerCase().trim();
+  const preset = LLM_PRESETS[key];
+  if (!preset) {
+    return { ok: false, error: `Unknown LLM preset "${name}". Choose one of: ${LLM_PRESET_NAMES.join(', ')}` };
+  }
+
+  const baseUrl = String(env[preset.baseUrlEnv] || preset.baseUrl || '').replace(/\/+$/, '');
+  if (!baseUrl) {
+    return { ok: false, error: `The ${key} preset needs a base URL — set ${preset.baseUrlEnv}` };
+  }
+
+  // Presets with a placeholderApiKey that do not declare OPENAI_API_KEY in
+  // apiKeyEnv (ollama, vllm) must not leak a user's OpenAI cloud key to local
+  // servers. Explicitly configured keys (<PRESET>_API_KEY) still win; byo
+  // includes OPENAI_API_KEY in apiKeyEnv directly.
+  const apiKey = preset.apiKeyEnv.map((k) => env[k]).find((v) => v)
+    || preset.placeholderApiKey
+    || env.OPENAI_API_KEY
+    || '';
+  const model = env.OPENAI_MODEL || env.SQA_LLM_MODEL || preset.defaultModel || null;
+
+  return {
+    ok: true,
+    name: key,
+    label: preset.label,
+    baseUrl,
+    apiKey,
+    model,
+    extraHeaders: preset.extraHeaders || {},
+    warnings: presetWarnings(key, env, model),
+  };
+}
+
+/**
+ * A provider whose configuration is broken. It fails every call with the
+ * configuration error instead of silently degrading to MockProvider — a scan
+ * that reports why planning produced nothing is recoverable; a silent mock is
+ * not.
+ */
+class UnconfiguredProvider {
+  constructor(error) {
+    this.name = 'unconfigured';
+    this.error = error;
+  }
+
+  async chat() {
+    return { ok: false, error: this.error };
+  }
+}
+
+function providerFromPreset(name, env) {
+  const resolved = resolvePreset(name, env);
+  if (!resolved.ok) {
+    console.warn(`[llmProvider] ${resolved.error}`);
+    return new UnconfiguredProvider(resolved.error);
+  }
+  for (const warning of resolved.warnings) {
+    console.warn(`[llmProvider] ${warning}`);
+  }
+  return new OpenAIProvider({
+    apiKey: resolved.apiKey,
+    baseUrl: resolved.baseUrl,
+    model: resolved.model,
+    extraHeaders: resolved.extraHeaders,
+  });
 }
 
 // ─── provider factory ────────────────────────────────────────────────
@@ -216,11 +398,18 @@ function zaiSdkInstalled() {
  *     otherwise            → MockProvider (with a warning — no real AI calls)
  */
 export function createProvider(env = process.env) {
+  // SQA_LLM_PRESET is the explicit, documented switch; SQA_LLM_PROVIDER also
+  // accepts a preset name so existing setups keep working.
+  const preset = String(env.SQA_LLM_PRESET || env.SQA_LLM_PROVIDER || '').toLowerCase().trim();
+  if (LLM_PRESETS[preset]) {
+    return providerFromPreset(preset, env);
+  }
+  if (env.SQA_LLM_PRESET) {
+    console.warn(`[llmProvider] Unknown SQA_LLM_PRESET "${env.SQA_LLM_PRESET}" — choose one of: ${LLM_PRESET_NAMES.join(', ')}; auto-detecting instead`);
+  }
+
   const pref = String(env.SQA_LLM_PROVIDER || '').toLowerCase().trim();
 
-  if (pref === 'openai') {
-    return new OpenAIProvider({ apiKey: env.OPENAI_API_KEY ?? '' });
-  }
   if (pref === 'glm' || pref === 'zai') {
     return new ZaiSdkProvider();
   }
