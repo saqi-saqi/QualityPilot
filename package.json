@@ -1,6 +1,6 @@
 {
   "name": "testigator",
-  "version": "0.5.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "Testigator (saqi-saqi/Testigator) — Self-hosted, deterministic-first Node.js + Playwright QA quality-gate agent & MCP server with SQLite TestOps state",
   "license": "Apache-2.0",

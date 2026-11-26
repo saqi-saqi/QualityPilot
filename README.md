@@ -457,7 +457,7 @@ The `report` markdown output doubles as a PR comment, and the SARIF file plugs i
 
 ```yaml
       - name: Testigator gate
-        uses: saqi-saqi/Testigator@v0.5.0
+        uses: saqi-saqi/Testigator@v1.0.0
         with:
           plan: testigator/plan.json
           url: ${{ vars.PREVIEW_URL }}
@@ -525,7 +525,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Replay Testigator plan
-        uses: saqi-saqi/Testigator@v0.5.0
+        uses: saqi-saqi/Testigator@v1.0.0
         with:
           plan: testigator/plan.json
           url: ${{ secrets.PREVIEW_URL }}
@@ -539,7 +539,7 @@ The action runs the exported plan without an LLM key, writes a summary to the Gi
 testigator export plan.json --format plan --out testigator
 ```
 
-Use a release tag such as `v0.5.0` in production workflows so upgrades are deliberate.
+Use a release tag such as `v1.0.0` in production workflows so upgrades are deliberate.
 
 Action inputs: `plan`, `url`, `fail_on`, `min_score`, `max_pages` (caps the plan's page set), `timeout` (hard replay deadline — a hung replay exits 70), `ignore_file` (waivers), and `authorized_target` (`true` authorizes active injection probes on non-loopback preview targets; loopback targets are always probed). A replay whose matrix cells fail, or that hits its deadline, exits 70 — it can never report a green gate without having executed the plan.
 

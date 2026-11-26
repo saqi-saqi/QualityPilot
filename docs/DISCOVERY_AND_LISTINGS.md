@@ -8,9 +8,9 @@ Because **"QualityPilot"** collided with multiple unrelated projects (`@qlens/cl
 
 | Surface / Identifier | Verified Live Status (2026-11-25) | Status / Owner Action |
 | :--- | :--- | :--- |
-| npm `testigator` (`https://registry.npmjs.org/testigator`) | **HTTP 404 (Available — zero collisions)** | Ready to publish cleanly via `npm publish` |
-| GitHub search (`testigator in:name`) | **0 matching repositories** | Rename repo `saqi-saqi/QualityPilot` -> `saqi-saqi/Testigator` in GitHub Settings |
-| npm legacy `qualitypilot` (`0.5.0`) | Live under owner account | Optionally publish a deprecation note (`npm deprecate qualitypilot "Renamed to testigator — npm install -g testigator"`) |
+| npm `testigator` (`https://registry.npmjs.org/testigator`) | **HTTP 404 (Available — zero collisions; target `1.0.0`)** | Ready to publish cleanly via `npm publish --access public` |
+| GitHub search (`testigator in:name`) | **0 matching repositories** (`saqi-saqi/Testigator` live) | Repository renamed cleanly to `saqi-saqi/Testigator` |
+| npm legacy `qualitypilot` (`0.5.0`) | Live under owner account (**deprecated**: `"moved to testigator"`) | Completed — installers directed to `testigator` |
 | LobeHub `saqi-saqi-sqa_agent` | Stale `"TestFlow" v0.3.0` linking `SQA_Agent` | **Owner action:** delist/remove stale entry |
 | LobeHub `saqi-saqi-qualitypilot` | Stale `"QualityPilot" v0.3.0` | **Owner action:** delist or rename/re-link to `saqi-saqi/Testigator` (`testigator-mcp`) |
 | Glama (`glama.ai/mcp/servers`) | 0 matching `testigator` or `qualitypilot` entries | **Owner action:** submit `saqi-saqi/Testigator` (`testigator-mcp`) |
