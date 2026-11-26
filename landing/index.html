@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>QualityPilot — autonomous QA agent for web apps</title>
-<meta name="description" content="QualityPilot crawls your web app, builds a test plan, and executes a full QA matrix — security headers, accessibility (WCAG 2.x), broken links, API contracts, fuzzing, performance and visual regression — then gates your CI with SARIF and JUnit reports.">
+<title>Testigator — autonomous QA agent for web apps</title>
+<meta name="description" content="Testigator crawls your web app, builds a test plan, and executes a full QA matrix — security headers, accessibility (WCAG 2.x), broken links, API contracts, fuzzing, performance and visual regression — then gates your CI with SARIF and JUnit reports.">
 <style>
   :root {
     --bg: #0b1020; --bg2: #111832; --panel: #141b38; --line: #26305a;
@@ -66,14 +66,14 @@
 <header>
   <div class="wrap">
     <nav>
-      <div class="logo">Quality<span>Pilot</span></div>
+      <div class="logo">Testi<span>gator</span></div>
       <div class="links">
         <a href="#pipeline">How it works</a>
         <a href="#detectors">Detectors</a>
         <a href="#ci">CI gate</a>
         <a href="#benchmark">Benchmark</a>
         <a href="#mcp">MCP</a>
-        <a href="https://github.com/saqi-saqi/QualityPilot">GitHub</a>
+        <a href="https://github.com/saqi-saqi/Testigator">GitHub</a>
       </div>
     </nav>
   </div>
@@ -82,16 +82,16 @@
 <div class="hero">
   <div class="wrap">
     <h1>Your web app's <em>whole QA matrix</em>,<br>run by one agent.</h1>
-    <p class="sub">QualityPilot crawls your app like a user, infers a test plan, and executes it across a browser-and-API execution matrix — security headers, WCAG accessibility, broken links, console and network failures, API contracts, input fuzzing, performance budgets and visual regression. Then it gates your CI with one exit code.</p>
+    <p class="sub">Testigator crawls your app like a user, infers a test plan, and executes it across a browser-and-API execution matrix — security headers, WCAG accessibility, broken links, console and network failures, API contracts, input fuzzing, performance budgets and visual regression. Then it gates your CI with one exit code.</p>
     <div class="cta">
-      <a class="btn primary" href="https://www.npmjs.com/package/qualitypilot">Install from npm</a>
-      <a class="btn ghost" href="https://github.com/saqi-saqi/QualityPilot">View on GitHub</a>
+      <a class="btn primary" href="https://www.npmjs.com/package/testigator">Install from npm</a>
+      <a class="btn ghost" href="https://github.com/saqi-saqi/Testigator">View on GitHub</a>
       <a class="btn ghost" href="#ci">Run the CI gate</a>
     </div>
-    <pre>npm install -g qualitypilot
+    <pre>npm install -g testigator
 npx playwright install chromium</pre>
     <div class="pillrow">
-      <span class="pill">Node ≥ 20</span>
+      <span class="pill">Node ≥ 22.19</span>
       <span class="pill">Playwright chromium/firefox/webkit</span>
       <span class="pill">SARIF 2.1.0</span>
       <span class="pill">JUnit XML</span>
@@ -104,12 +104,12 @@ npx playwright install chromium</pre>
 <section id="pipeline">
   <div class="wrap">
     <h2>From URL to verified findings</h2>
-    <p class="lede">No rules files to write, no test suite to maintain. Point QualityPilot at a URL and it does the four things a QA team does on day one — then keeps doing them on every commit.</p>
+    <p class="lede">No rules files to write, no test suite to maintain. Point Testigator at a URL and it does the four things a QA team does on day one — then keeps doing them on every commit.</p>
     <div class="grid">
       <div class="card"><span class="tag">Step 1</span><h3>Crawl</h3><p>A real browser explores the app: same-origin links, SPA hash routes, forms, API traffic. Redirects that leave the target's origin are refused.</p></div>
       <div class="card"><span class="tag">Step 2</span><h3>Plan</h3><p>The explorer turns crawled evidence into a validated test plan — pages, flows, API endpoints, fuzz targets, a11y rule scope — every URL SSRF-checked.</p></div>
       <div class="card"><span class="tag">Step 3</span><h3>Execute a matrix</h3><p>Executors run across browser × viewport × role cells with retry-and-confirm classification, so one-off flakes don't become findings.</p></div>
-      <div class="card"><span class="tag">Step 4</span><h3>Gate</h3><p>Findings are deduped, scored 0–100, and reported as SARIF/JUnit. <code>qualitypilot check</code> exits non-zero when your policy is violated.</p></div>
+      <div class="card"><span class="tag">Step 4</span><h3>Gate</h3><p>Findings are deduped, scored 0–100, and reported as SARIF/JUnit. <code>testigator check</code> exits non-zero when your policy is violated.</p></div>
     </div>
   </div>
 </section>
@@ -136,7 +136,7 @@ npx playwright install chromium</pre>
     <h2>The CI gate</h2>
     <p class="lede">One command, machine-readable reports, honest exit codes: 0 pass, 1 gate violated, 64 usage, 70 scan failure — a scan that couldn't finish never reports a green pass.</p>
     <div class="twocol">
-<pre>qualitypilot check https://staging.example.com \
+<pre>testigator check https://staging.example.com \
   --fail-on critical,high \
   --min-score 80 \
   --max-pages 25 --max-depth 2 \
@@ -170,17 +170,17 @@ FAIL: 2 confirmed finding(s) at severity critical, high</pre>
         <tr><td><code>transport-http</code> — security</td><td>high</td><td class="ok">✅ detected</td></tr>
       </tbody>
     </table>
-    <p class="fineprint">Full surface = the default <code>qualitypilot check</code> pipeline (crawl → inferred plan → 10 executors → dedup → score). Observational detectors (axe, console, links) are reported but excluded from the deterministic denominator by design. The other direction is triaged too: the same pipeline against the official RealWorld Conduit demo produced <strong>0 false positives in 148 findings</strong>, each classified against live headers, the served HTML and recorded DOM evidence (<code>benchmark/results/conduit-triage.md</code>).</p>
+    <p class="fineprint">Full surface = the default <code>testigator check</code> pipeline (crawl → inferred plan → full executor matrix → dedup → score). Observational detectors (axe, console, links) are reported but excluded from the deterministic denominator by design. The other direction is triaged too: the same pipeline against the official RealWorld Conduit demo produced <strong>0 false positives in 148 findings</strong>, each classified against live headers, the served HTML and recorded DOM evidence (<code>benchmark/receipts/2026-11-19-conduit-fp-triage.md</code>).</p>
   </div>
 </section>
 
 <section id="mcp">
   <div class="wrap">
     <h2>An agent, not just a CLI</h2>
-    <p class="lede">QualityPilot ships an MCP server (<code>qualitypilot-mcp</code>) so coding agents can start scans, read findings, diff runs and export evidence bundles as tools. A dashboard with SSE progress, run diffs and flaky-tracking comes with the repo.</p>
+    <p class="lede">Testigator ships an MCP server (<code>testigator-mcp</code>) so coding agents can start scans, read findings, diff runs and export evidence bundles as tools. A dashboard with SSE progress, run diffs and flaky-tracking comes with the repo.</p>
     <pre>{
   "mcpServers": {
-    "qualitypilot": { "command": "qualitypilot-mcp" }
+    "testigator": { "command": "testigator-mcp" }
   }
 }</pre>
   </div>
@@ -188,8 +188,8 @@ FAIL: 2 confirmed finding(s) at severity critical, high</pre>
 
 <footer>
   <div class="wrap">
-    <div>QualityPilot — Apache-2.0. Juice Shop recall harness included; run your own numbers.</div>
-    <div><a href="https://www.npmjs.com/package/qualitypilot">npm</a> · <a href="https://github.com/saqi-saqi/QualityPilot">GitHub</a> · <a href="#benchmark">Benchmark</a></div>
+    <div>Testigator — Apache-2.0. Juice Shop &amp; QA-Bench recall harnesses included; run your own numbers.</div>
+    <div><a href="https://www.npmjs.com/package/testigator">npm</a> · <a href="https://github.com/saqi-saqi/Testigator">GitHub</a> · <a href="#benchmark">Benchmark</a></div>
   </div>
 </footer>
 

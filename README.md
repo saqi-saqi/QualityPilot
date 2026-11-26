@@ -1,10 +1,16 @@
-# QualityPilot
+# Testigator
 
-[![Benchmark (recall regression gate)](https://github.com/saqi-saqi/QualityPilot/actions/workflows/benchmark.yml/badge.svg)](https://github.com/saqi-saqi/QualityPilot/actions/workflows/benchmark.yml)
+[![Repo: saqi-saqi/Testigator](https://img.shields.io/badge/repo-saqi--saqi%2FTestigator-blue)](https://github.com/saqi-saqi/Testigator)
+[![npm: testigator](https://img.shields.io/npm/v/testigator)](https://www.npmjs.com/package/testigator)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-green.svg)](LICENSE)
+[![Node >= 22.19.0](https://img.shields.io/badge/node-%3E%3D22.19.0-brightgreen)](package.json)
+[![Benchmark (recall regression gate)](https://github.com/saqi-saqi/Testigator/actions/workflows/benchmark.yml/badge.svg)](https://github.com/saqi-saqi/Testigator/actions/workflows/benchmark.yml)
+
+> **Official Testigator (`saqi-saqi/Testigator` · npm `testigator` · MCP `testigator-mcp` · Apache-2.0; formerly *QualityPilot*)** — Self-hosted, deterministic-first web & API QA quality-gate agent in Node.js + Playwright with local SQLite TestOps state. Rebranded to `Testigator` to avoid collisions with unrelated projects using the *QualityPilot* name; legacy `qualitypilot` CLI commands and `qualitypilot.sqlite` databases remain backward-compatible. See [Rebrand & Orientation](#namesake--directory-orientation).
 
 > Autonomous software QA agent for web applications and APIs — crawls, infers test plans (with human approval), executes matrix test suites across browsers, viewports, and authenticated roles, files deduplicated regressions to your issue tracker, and gates your CI pipeline.
 
-QualityPilot is a zero-cost, self-hostable QA testing platform built on Node.js and Playwright. Give it any target web URL and QualityPilot will autonomously crawl pages, inspect network waterfalls with automatic privacy redaction, generate test suites via an AI planner (or deterministic heuristics), and run combinatorial tests across browsers, responsive viewports, and authenticated sessions. All runs, monitors, job queues, flaky history, visual baselines, and finding triage state are persisted locally in SQLite with zero cloud dependencies.
+Testigator is a zero-cost, self-hostable QA testing platform built on Node.js and Playwright. Give it any target web URL and Testigator will autonomously crawl pages, inspect network waterfalls with automatic privacy redaction, generate test suites via an AI planner (or deterministic heuristics), and run combinatorial tests across browsers, responsive viewports, and authenticated sessions. All runs, monitors, job queues, flaky history, visual baselines, and finding triage state are persisted locally in SQLite with zero cloud dependencies.
 
 ---
 
@@ -19,17 +25,17 @@ QualityPilot is a zero-cost, self-hostable QA testing platform built on Node.js 
 **From npm (recommended):**
 
 ```bash
-npm install -g qualitypilot
+npm install -g testigator
 npx playwright install chromium   # one-time browser download (~130 MB)
 ```
 
-This installs the `qualitypilot` CLI and `qualitypilot-mcp` MCP server.
+This installs the `testigator` CLI and `testigator-mcp` MCP server (legacy `qualitypilot` / `qualitypilot-mcp` aliases remain included for existing setups).
 
 **From source (development):**
 
 ```bash
-git clone https://github.com/saqi-saqi/QualityPilot.git
-cd QualityPilot
+git clone https://github.com/saqi-saqi/Testigator.git
+cd Testigator
 npm install
 npx playwright install --with-deps chromium
 ```
@@ -40,7 +46,7 @@ This gives you the same commands locally through the repository scripts:
 ### First scan (CLI, no dashboard needed)
 
 ```bash
-qualitypilot check https://example.com --max-pages 3
+testigator check https://example.com --max-pages 3
 ```
 
 Prints a score and a findings summary, and exits 0 when the quality gate
@@ -75,9 +81,38 @@ Or open the dashboard UI at `http://localhost:8080`, type `https://example.com`,
 
 *(To test local dev sites on `localhost`, set `SQA_ALLOW_PRIVATE=true` in `.env`)*
 
-### Use FreeLLMAPI locally
+## 🧠 Test Planning: Deterministic by Default, Local Model Optional
 
-QualityPilot can use a local [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi)
+Plan inference is the only place Testigator uses a model. Crawling, the execution matrix, axe accessibility, security headers, API contracts, performance metrics, visual diffing, scoring and the quality gate are deterministic — they run with **no API key and no token cost**.
+
+With no LLM configured the planner falls back to heuristics (the `mock` provider). One warning line is expected; set `SQA_LLM_PROVIDER=mock` to silence it. This is the default CI mode, not a degraded one: nothing in the gate or the deterministic executors depends on a model.
+
+When you do want AI planning, pick a preset. All five speak the same OpenAI-compatible `/chat/completions` dialect — no vendor SDK, no cloud requirement:
+
+| Preset | Endpoint | Key | Model |
+| :--- | :--- | :--- | :--- |
+| `ollama` | `http://127.0.0.1:11434/v1` (`OLLAMA_BASE_URL`) | not needed (`OLLAMA_API_KEY` optional) | `qwen2.5:7b` — override with `OPENAI_MODEL` |
+| `vllm` | `http://127.0.0.1:8000/v1` (`VLLM_BASE_URL`) | `VLLM_API_KEY` if started with `--api-key` | **required**: `OPENAI_MODEL` |
+| `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` |
+| `openai` | `https://api.openai.com/v1` (`OPENAI_BASE_URL`) | `OPENAI_API_KEY` | `gpt-4o-mini` |
+| `byo` | **required**: `OPENAI_BASE_URL` | `OPENAI_API_KEY` if your gateway needs one | `OPENAI_MODEL` |
+
+```bash
+# Fully local: no cloud key anywhere in the run
+ollama pull qwen2.5:7b
+OLLAMA_CONTEXT_LENGTH=8192 testigator check http://localhost:3000 \
+  --allow-private --llm-preset ollama
+```
+
+Presets are also selectable through `SQA_LLM_PRESET=ollama` instead of the flag; `SQA_LLM_PROVIDER` accepts the same names for backwards compatibility.
+
+> **Ollama context window.** Ollama serves a small `num_ctx` by default (4096 tokens on recent versions, less on older ones) and drops older prompt tokens once it overflows. Raise it with `OLLAMA_CONTEXT_LENGTH=8192` (Ollama ≥ 0.6) or `num_ctx` in a Modelfile before trusting plan quality. Testigator prints this warning whenever the `ollama` preset is active; `SQA_LLM_NO_WARN=1` silences it.
+
+### Optional: FreeLLMAPI (community, hobby use)
+
+FreeLLMAPI's own README describes it as for “personal experimentation only” and “local-first and single-user by design”. It is a convenient hobby gateway, but it is not the recommended path for a privacy-sensitive QA scan — prefer the `ollama`, `vllm` or `byo` presets above when the target is anything you care about.
+
+If you still want to use it, Testigator can talk to a local [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi)
 gateway through its OpenAI-compatible endpoint:
 
 ```dotenv
@@ -101,9 +136,9 @@ do not expose port `3001` publicly.
 
 ---
 
-## 🤖 Use QualityPilot from Claude Code / Cursor
+## 🤖 Use Testigator from Claude Code / Cursor
 
-QualityPilot exposes an official [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server running over standard input/output (`stdio`). This allows AI coding agents (Claude Code, Cursor, Codex, or any MCP-compatible client) to call QualityPilot's accessibility, API contract, console error, and security checks directly inside their edit-test-fix loop.
+Testigator exposes an official [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server running over standard input/output (`stdio`). This allows AI coding agents (Claude Code, Cursor, Codex, or any MCP-compatible client) to call Testigator's accessibility, API contract, console error, and security checks directly inside their edit-test-fix loop.
 
 ### 1. Register the MCP Server
 
@@ -112,8 +147,8 @@ Add this configuration snippet to your `.mcp.json` (Claude Code) or Cursor MCP s
 ```json
 {
   "mcpServers": {
-    "qualitypilot": {
-      "command": "qualitypilot-mcp",
+    "testigator": {
+      "command": "testigator-mcp",
       "env": {
         "SQA_ALLOW_PRIVATE": "true"
       }
@@ -127,24 +162,24 @@ Running from a source checkout instead of a global install? Use
 directory to the repo root.
 
 > **Why `SQA_ALLOW_PRIVATE=true`?**
-> QualityPilot's enterprise SSRF boundary blocks private IP ranges (`127.0.0.1`, `10.0.0.0/8`, `192.168.0.0/16`, CGNAT, IPv4-mapped IPv6 in any spelling, cloud metadata endpoints) by default — for the MCP server, the dashboard and the `qualitypilot check` CLI alike. Setting `SQA_ALLOW_PRIVATE="true"` (or passing `--allow-private` to `check`) permits local loopback scanning so your agent can verify `http://localhost:3000` or local dev servers.
+> Testigator's enterprise SSRF boundary blocks private IP ranges (`127.0.0.1`, `10.0.0.0/8`, `192.168.0.0/16`, CGNAT, IPv4-mapped IPv6 in any spelling, cloud metadata endpoints) by default — for the MCP server, the dashboard and the `testigator check` CLI alike. Setting `SQA_ALLOW_PRIVATE="true"` (or passing `--allow-private` to `check`) permits local loopback scanning so your agent can verify `http://localhost:3000` or local dev servers.
 
-> **Probe redirect policy (audit L-3):** every HTTP probe the scanner issues — security-header audit, authz reachability, injection differentials, API fuzz, link checks — goes through `ssrf.safeFetch`: the initial URL **and every redirect `Location`** are DNS-resolved and range-checked *before* QualityPilot connects to them. A redirect to a private/loopback/cloud-metadata address, a non-http(s) scheme, or an unparseable `Location` fails that probe closed (logged as an event, never reported as a target defect). Redirect chains are bounded; loops abort with `Too many redirects`.
+> **Probe redirect policy (audit L-3):** every HTTP probe the scanner issues — security-header audit, authz reachability, injection differentials, API fuzz, link checks — goes through `ssrf.safeFetch`: the initial URL **and every redirect `Location`** are DNS-resolved and range-checked *before* Testigator connects to them. A redirect to a private/loopback/cloud-metadata address, a non-http(s) scheme, or an unparseable `Location` fails that probe closed (logged as an event, never reported as a target defect). Redirect chains are bounded; loops abort with `Too many redirects`.
 
 > **Security Note**: The `stdio` transport runs as a local subprocess with zero network exposure. If an HTTP/SSE transport is enabled for remote access in the future, token authentication becomes mandatory.
 
 ### Zero-config demo (no LLM key required)
 
-QualityPilot runs without any AI credentials: plan inference falls back to
+Testigator runs without any AI credentials: plan inference falls back to
 deterministic heuristics (the `mock` provider). One warning line is expected:
 
 ```
 [llmProvider] No LLM provider configured ... using MockProvider
 ```
 
-Set `SQA_LLM_PROVIDER=mock` to silence it. To enable AI planning, set
-`SQA_LLM_PROVIDER=openai` with `OPENAI_API_KEY` (plus optional `OPENAI_BASE_URL`
-for any OpenAI-compatible gateway). The `z-ai-web-dev-sdk` vendor SDK ships as
+Set `SQA_LLM_PROVIDER=mock` to silence it. To enable AI planning, pick a preset
+with `--llm-preset ollama|vllm|openrouter|openai|byo` (see *Test Planning* above).
+The `z-ai-web-dev-sdk` vendor SDK ships as
 an **optional dependency** - it is only loaded when you explicitly select
 `SQA_LLM_PROVIDER=glm`, so its absence never breaks installation or the other
 providers.
@@ -160,6 +195,8 @@ providers.
 | `start_full_scan(url, options?)` | Asynchronous deep matrix scan (crawls, multi-browser, viewports). Returns `job_id` | Immediate |
 | `get_scan_status(job_id)` | Polls status (`pending` | `running` | `complete` | `failed`) and pages scanned | Immediate |
 | `get_scan_report(job_id, verbosity?)` | Invariant-validated structured JSON report with CONFIRMED findings | Immediate |
+
+> **Compact MCP payloads:** `quick_check`, `check_accessibility`, `check_api_contract`, and `get_scan_report` return compact summaries (measured max response **~1,366 tokens / 5,464 bytes**, staying well under the 2,000-token budget) and write complete redacted JSON artifacts to `.testigator/artifacts/<runId>/report.json` ([audit receipt](benchmark/receipts/2026-11-25-mcp-payload-audit.md)).
 
 ### 3. Example Prompts for Your Coding Agent
 
@@ -178,7 +215,7 @@ Once connected, you can give your AI agent natural prompts like:
 
 ## 🐳 Self-Host with Docker (1 Command)
 
-QualityPilot runs on 100% free, official Docker base images with zero external services:
+Testigator runs on 100% free, official Docker base images with zero external services:
 
 ```bash
 cp .env.example .env
@@ -233,9 +270,9 @@ flowchart TD
 ```
 
 ### Module Breakdown
-- **`src/matrix/`**: Combinatorial execution engine testing $\text{Browsers} \times \text{Viewports} \times \text{Auth Roles}$. Deduplicates findings by `(ruleId, pageUrl, element)` and tracks flaky tests (grouped by normalized options, ≥3 alternations required).
+- **`src/matrix/`** & **`src/matrix/sharding.js`**: Combinatorial execution engine testing $\text{Browsers} \times \text{Viewports} \times \text{Auth Roles}$ plus CI shard partitioning (`--shard i/N`) and deterministic cross-shard report unification (`src/cli/mergeReports.js`). Deduplicates findings by `(ruleId, pageUrl, element)` and tracks flaky tests (grouped by normalized options, ≥3 alternations required).
 - **`src/storage/`**: Relational persistence via `better-sqlite3` with `PRAGMA user_version` migrations — `runs`, `monitors`, `job_queue`, `flaky_history`, `finding_states`, `baselines`, `plan_drafts` — designed for future zero-friction migration to PostgreSQL.
-- **`src/services/jobQueue.js`**: Atomic SQLite-backed job queue. Guarantees in-flight and queued runs survive process crashes and restarts without Redis or BullMQ; interrupted runs are recovered and marked failed on boot, and SIGTERM/SIGINT drain cleanly.
+- **`src/storage/jobQueue.js`**: Atomic SQLite-backed job queue. Guarantees in-flight and queued runs survive process crashes and restarts without Redis or BullMQ; interrupted runs are recovered and marked failed on boot, and SIGTERM/SIGINT drain cleanly.
 - **`src/explorer/`**: AI test planner. Generates E2E user flows (with self-healing-selector-aware inference and `needsReview` flags for hallucinated selectors) and API schema expectations using anonymized DOM structure. Flags flows for review when selectors were never observed in the crawl.
 - **`src/executors/selectorResolver.js`**: Deterministic selector self-healing ladder (original → `data-testid`/`data-test`/`aria-label` → role → text). Heals rotting selectors instead of failing noisily.
 - **`src/services/testData.js`**: Test-data store (`data/testdata.json` + `SQA_TD_*` env vars) with `${VAR}` substitution in flow steps — no invented credentials.
@@ -247,8 +284,8 @@ flowchart TD
 - **`src/executors/injection.js` + `authz.js`**: differential SQL-injection detection (status/length/error-signature signals vs a healthy baseline), login-form auth-bypass probing, DOM-XSS sink detection, and anonymous-reachability checks for admin-namespaced APIs.
 - **`src/services/waivers.js`**: findings waivers with expiry and mandatory written reasons — waived findings stay visible but stop failing the gate; expired waivers warn loudly and surface the finding again.
 - **`src/services/openapiImport.js`**: deterministic OpenAPI/Swagger import (`--openapi`) — the spec's paths become the API surface, no inference involved.
-- **`src/cli/check.js`**: CI quality gate — exit codes driven by severity thresholds and minimum score, regression-only gating via `--baseline`, waivers via `--ignore-file`, parallel matrix cells via `--concurrency`, plus `--junit`/`--sarif`/`--format markdown` export.
-- **`benchmark/`**: the recall harness and ground truth that back every number this README states.
+- **`src/cli/check.js`**, **`src/cli/testigator.js`**, & **`src/cli/mergeReports.js`**: CI quality gate (`testigator`, plus legacy `src/cli/qualitypilot.js` alias) — exit codes driven by severity thresholds and minimum score, regression-only gating via `--baseline`, waivers via `--ignore-file`, parallel matrix cells via `--concurrency`, CI sharding via `--shard <i/N>` + `--shard-out` with `testigator merge-reports`, plus `--junit`/`--sarif`/`--format markdown` export.
+- **`benchmark/`** & **`benchmark/qa-bench/`**: Recall harnesses, ground truths, receipts, and the version-locked multi-role seeded web-app fixture (`NovaOps QA-Bench v1.0.0`).
 
 ---
 
@@ -258,6 +295,7 @@ flowchart TD
 - **Record-once logins** capture a session (2FA/CAPTCHA included — you log in yourself) encrypted at rest; record **multiple roles** per monitor and the matrix replays each role.
 - **Finding triage**: mark findings `acknowledged` / `false positive` / `fixed` in the dashboard — state persists across runs.
 - **Run diff**: "Compare with previous run" shows exactly what's new, resolved, and persistent, with a score delta.
+- **Visual Baseline Review (`#/baselines`)**: Side-by-side baseline / current / diff viewer in the dashboard with editable CSS `maskSelectors`, persistent `approve` and expiring `waive` decisions stored in SQLite (`baselines` + `baseline_decisions`), and next-run gate synchronization.
 - **Flaky tracking**: results feed a flaky-history table (grouped by options hash; labeled flaky only after ≥3 alternations).
 - **Retention**: old runs and screenshots are cleaned up automatically (checked at boot and every 6 hours).
 
@@ -267,12 +305,12 @@ Fail builds on quality regressions straight from the CLI:
 
 ```bash
 # Installed package:
-qualitypilot check https://staging.example.com \
+testigator check https://staging.example.com \
   --max-pages 10 \
   --fail-on critical,high \
   --min-score 80 \
   --junit test-results.xml \
-  --sarif qualitypilot.sarif
+  --sarif testigator.sarif
 
 # From a source checkout:
 npm run check -- https://staging.example.com --max-pages 10 --fail-on critical,high --min-score 80
@@ -287,10 +325,10 @@ On a second and every later scan, fail the build only on **new** findings — pr
 
 ```bash
 # First run — the JSON report becomes the baseline (stdout is pure JSON; progress goes to stderr):
-qualitypilot check https://staging.example.com --format json > baseline.json
+testigator check https://staging.example.com --format json > baseline.json
 
 # Every later run — exit 1 only when a NEW finding appears:
-qualitypilot check https://staging.example.com --baseline baseline.json --fail-on low
+testigator check https://staging.example.com --baseline baseline.json --fail-on low
 ```
 
 - `--baseline <file|runId>` accepts a saved `--format json` report or a stored run id; an unreadable baseline is a usage error (exit 64), never a silent pass.
@@ -304,7 +342,7 @@ qualitypilot check https://staging.example.com --baseline baseline.json --fail-o
 - **`--login <recording>`** — replays a recorded login session (recorded via the dashboard) against the target: the crawl and browser cells run authenticated, and the API contract probes carry the session cookie. Sessions live encrypted in `data/sessions/`. If the named recording does not exist the run fails (exit 70) — it never silently falls back to an anonymous scan.
 
 ```bash
-qualitypilot check http://localhost:3000 --openapi swagger.yml --login juice-shop-cli
+testigator check http://localhost:3000 --openapi swagger.yml --login testigator-cli
 ```
 ### Injection probing
 
@@ -317,9 +355,9 @@ A dedicated `injection` executor runs three bounded, non-destructive probes and 
 Safety model: probes run **by default on loopback targets only** (`localhost`, `127.0.0.0/8`, `::1`). Non-loopback targets require the explicit flag:
 
 ```bash
-qualitypilot check https://staging.example.com --authorized-target
+testigator check https://staging.example.com --authorized-target
 # plan replay (and the GitHub Action's `authorized_target` input) accepts the same flag:
-qualitypilot replay plan.json --url https://staging.example.com --authorized-target
+testigator replay plan.json --url https://staging.example.com --authorized-target
 ```
 
 No `DROP`/stacked payloads exist; login sessions created by a probe die with the scan's browser context. On clean apps the probes stay silent (verified: authorized scan of the RealWorld Conduit demo → 0 injection findings).
@@ -328,16 +366,63 @@ No `DROP`/stacked payloads exist; login sessions created by a probe die with the
 Matrix cells run in parallel — browser cells share one browser process through the pool, no-browser cells (security, API contract, links/console/network) fully parallelize:
 
 ```bash
-qualitypilot check https://staging.example.com --concurrency 4   # 1–4, default 2
+testigator check https://staging.example.com --concurrency 4   # 1–4, default 2
 ```
 
 Form fuzzing loads each page **once per target** (safe mode never submits, so there is no server traffic to pace) and re-navigates only after a thrown input, instead of re-navigating for every single input. Fuzz payload generators are non-destructive too — tautologies, clause closers and boundary values, no `DROP`, no stacked statements, and safe mode never submits the form.
+### CI Matrix Sharding (`--shard` & `merge-reports`)
+
+Split large multi-viewport or multi-role matrix scans across parallel GitHub Actions runners using `--shard <i>/<N>` + isolated shard storage, then merge the shard JSON files into one unified findings set, quality score, and CI gate exit code:
+
+```yaml
+jobs:
+  qa-shard:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['1/4', '2/4', '3/4', '4/4']
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci && npx playwright install chromium
+      - name: Run shard ${{ matrix.shard }}
+        continue-on-error: true
+        run: |
+          node src/cli/testigator.js check https://staging.example.com \
+            --shard "${{ matrix.shard }}" \
+            --shard-out "shard-${{ strategy.job-index }}.json" \
+            --fail-on none \
+            --format json > /dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qp-shard-${{ strategy.job-index }}
+          path: shard-*.json
+
+  qa-merge:
+    needs: qa-shard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: qp-shard-*
+          merge-multiple: true
+      - name: Merge shards & evaluate CI gate
+        run: |
+          node src/cli/testigator.js merge-reports shard-*.json \
+            --fail-on critical,high \
+            --min-score 80 \
+            --sarif testigator.sarif \
+            --junit test-results.xml
+```
+
 ### Job-summary markdown
 
 `--format markdown` renders a compact gate summary (verdict, severity counts, top rules, new-vs-baseline diff) for `$GITHUB_STEP_SUMMARY`, PR comments, or tickets:
 
 ```bash
-qualitypilot check https://staging.example.com --baseline baseline.json --format markdown >> "$GITHUB_STEP_SUMMARY"
+testigator check https://staging.example.com --baseline baseline.json --format markdown >> "$GITHUB_STEP_SUMMARY"
 ```
 
 ## 📄 Shareable Reports & Waivers
@@ -345,7 +430,7 @@ qualitypilot check https://staging.example.com --baseline baseline.json --format
 Turn a saved run into a self-contained HTML report (inline CSS, no scripts, no external assets — paste it into a ticket or attach it to a release):
 
 ```bash
-qualitypilot report baseline.json --html report.html
+testigator report baseline.json --html report.html
 ```
 
 Waivers let teams accept known findings without losing them: waived findings stay visible (annotated) but stop failing the gate. A waiver without a written reason is rejected; expired waivers warn loudly and surface the finding again:
@@ -356,7 +441,7 @@ Waivers let teams accept known findings without losing them: waived findings sta
 ```
 
 ```bash
-qualitypilot check https://staging.example.com --baseline baseline.json --ignore-file .qualitypilotignore.json
+testigator check https://staging.example.com --baseline baseline.json --ignore-file .testigatorignore.json
 ```
 
 A waiver matches on `ruleId` plus optional scope keys — `pageUrl` (origin + path; a trailing `*` is a path-prefix that never crosses the origin), `method`, `selector`, and `role`/`roles` (the scan context). Two hard rules:
@@ -364,17 +449,17 @@ A waiver matches on `ruleId` plus optional scope keys — `pageUrl` (origin + pa
 - **Unknown keys are rejected.** A typo like `"rolez"` used to be dropped silently, turning a scoped waiver into a global one.
 - **A role-scoped waiver only suppresses a finding observed in every role it covers.** Waiving a defect for the `admin` role never hides the same defect seen by the `anon` control scan.
 
-URL matching is normalized: scheme/host case, default ports (`:443`), trailing slashes and fragments do not affect matching; query strings are ignored unless the waiver itself specifies one. `expiresAt` is an ISO `yyyy-mm-dd` date, inclusive through the end of the stated UTC day. Waived findings do not fail `--fail-on`, but `--min-score` deliberately still uses the unwaived run score — the gate reason line says so when waivers are applied. `qualitypilot replay` (and therefore the GitHub Action's `ignore_file` input) honours the same file.
+URL matching is normalized: scheme/host case, default ports (`:443`), trailing slashes and fragments do not affect matching; query strings are ignored unless the waiver itself specifies one. `expiresAt` is an ISO `yyyy-mm-dd` date, inclusive through the end of the stated UTC day. Waived findings do not fail `--fail-on`, but `--min-score` deliberately still uses the unwaived run score — the gate reason line says so when waivers are applied. `testigator replay` (and therefore the GitHub Action's `ignore_file` input) honours the same file.
 
 ### GitHub Actions: PR comment + SARIF upload
 
 The `report` markdown output doubles as a PR comment, and the SARIF file plugs into code scanning:
 
 ```yaml
-      - name: QualityPilot gate
-        uses: saqi-saqi/QualityPilot@v0.5.0
+      - name: Testigator gate
+        uses: saqi-saqi/Testigator@v0.5.0
         with:
-          plan: qualitypilot/plan.json
+          plan: testigator/plan.json
           url: ${{ vars.PREVIEW_URL }}
           fail_on: critical,high
 
@@ -382,13 +467,13 @@ The `report` markdown output doubles as a PR comment, and the SARIF file plugs i
         if: always()
         uses: marocchino/sticky-pull-request-comment@v2
         with:
-          path: qualitypilot-summary.md
+          path: testigator-summary.md
 
       - name: Upload SARIF to code scanning
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: qualitypilot.sarif
+          sarif_file: testigator.sarif
 ```
 
 #### Supply-chain pinning & update process
@@ -401,29 +486,34 @@ To update a pin:
 2. Replace the SHA/digest and its version comment **together** (a stale version comment is worse than none).
 3. Dispatch the CI and Benchmark workflows and confirm green before merging.
 
-The same advice applies to the `saqi-saqi/QualityPilot@v…` reference in your own workflow files: pin the exact version tag you tested against (or its full SHA) rather than a floating major.
+The same advice applies to the `saqi-saqi/Testigator@v…` reference in your own workflow files: pin the exact version tag you tested against (or its full SHA) rather than a floating major.
 
 ---
 ## 🎯 Benchmarked Recall & False-Positive Triage
 
-We hold the scanner to the same bar it holds your app. Two proof artifacts ship in the repo and run on demand:
+We hold the scanner to the same bar it holds your app. Three proof artifacts ship in the repo and run on demand:
 
-- **Juice Shop recall harness** (`benchmark/run-recall-benchmark.mjs` + `benchmark/groundtruth-juiceshop.json`): runs the default full-surface `qualitypilot check` pipeline against a local OWASP Juice Shop v20.4.0 and scores it against a deterministic ground truth spanning five vulnerability classes (security headers, transport, SQL injection, DOM XSS, broken access control). Every expectation is **re-verified against the live target before scoring** (target drift cannot fake a number), and known false-positive modes are asserted as must-not-find rules. Current recorded receipt: **10/10 expectations detected (100% recall), 0 false-positive-guard violations, 183s** (2026-11-19, qualitypilot@0.4.0 — see [`benchmark/receipts/2026-11-19-juiceshop-recall.md`](benchmark/receipts/2026-11-19-juiceshop-recall.md)). Curated receipts are committed under [`benchmark/receipts/`](benchmark/receipts/) (scratch output stays in the ignored `benchmark/results/`), and the nightly benchmark job re-verifies all of it.
+- **Juice Shop recall harness** (`benchmark/run-recall-benchmark.mjs` + `benchmark/groundtruth-juiceshop.json`): runs the default full-surface `testigator check` pipeline against a local OWASP Juice Shop v20.4.0 and scores it against a deterministic ground truth spanning five vulnerability classes (security headers, transport, SQL injection, DOM XSS, broken access control). Every expectation is **re-verified against the live target before scoring** (target drift cannot fake a number), and known false-positive modes are asserted as must-not-find rules. Current recorded receipt: **10/10 expectations detected (100% recall), 0 false-positive-guard violations, 189s** (2026-11-24, measured on pre-rebrand `qualitypilot@0.5.0` at commit `f66d901`: [`benchmark/receipts/2026-11-24-juiceshop-recall.md`](benchmark/receipts/2026-11-24-juiceshop-recall.md)). Curated receipts are stored under [`benchmark/receipts/`](benchmark/receipts/) (scratch output stays in the ignored `benchmark/results/`), and the nightly benchmark job re-verifies all of it.
 - **RealWorld/Conduit false-positive triage**: the same pipeline against the official RealWorld Conduit demo, with every finding classified true/false positive against the [documented Conduit API spec](https://github.com/gothinkster/realworld/blob/main/specs/api/openapi.yml) (401/404/409/422 are spec-defined responses, not defects). The classification receipt is published under [`benchmark/receipts/`](benchmark/receipts/).
+- **QA-Bench v1.0.0 multi-role seeded web app** ([`benchmark/qa-bench/`](benchmark/qa-bench/README.md) + `benchmark/run-qa-bench.mjs` + `benchmark/qa-bench/groundtruth.json`): self-contained Node/SPA fixture (`anon`, `user`, `admin` roles) with 58 seeded regressions across accessibility, security, API/runtime, E2E journeys, visual diffs, and performance plus 5 false-positive controls:
+  - **Heuristic Check (`mock`, no LLM)**: `41/58` (`70.7%` recall — `14/14` a11y, `14/14` security, `6/14` api/runtime, `0/8` e2e, `4/4` visual, `3/4` perf), `0/5` FP violations, `110.6s`.
+  - **Local Ollama Check (`gemma:2b`, no cloud key)**: `41/58` (`70.7%` recall — `14/14` a11y, `14/14` security, `6/14` api/runtime, `0/8` e2e, `4/4` visual, `3/4` perf), `0/5` FP violations, `344.8s`.
+  - **Replay Approved Plan (`plan.json`)**: `52/58` (`89.7%` recall — `14/14` a11y, `14/14` security, `8/14` api/runtime, `8/8` e2e, `4/4` visual, `4/4` perf), `0/5` FP violations, `176.3s`.
+  - **Playwright Agents**: excluded because `playwright@1.63.0 init-agents` only scaffolds interactive IDE agent loops (`--loop claude|codex|copilot|opencode|vscode`) rather than a headless autonomous CLI scan. See [`benchmark/receipts/2026-11-25-qa-bench-results.md`](benchmark/receipts/2026-11-25-qa-bench-results.md).
 
 Methodology notes: only deterministic expectations score recall — crawl-state-dependent detectors (axe, console, links) are reported as observational context; the benchmark measures exactly what a user gets from the default executor list, no special benchmark mode.
 
 A product landing page ships in [`landing/`](landing/index.html) — a single static file, deployable anywhere.
 
-**Latest receipt:** 10/10 expectations detected on 2026-11-19 (run `run_matrix_1795076779880_ba4b4d0f`, qualitypilot@0.4.0, 0 false-positive-guard violations, 183s). New receipts record the QualityPilot version and git commit they ran at (the two 2026-11-19 receipts predate provenance capture and say so explicitly). The nightly benchmark job re-verifies this on every run — a recall regression fails the build, and the badge above turns red. Run your own numbers: `node benchmark/run-recall-benchmark.mjs --base-url <juice-shop-url> --min-recall 1.0`.
+**Latest receipt:** 10/10 expectations detected on 2026-11-24 (run `run_matrix_1795515851938_53b7275d`, qualitypilot@0.5.0, 0 false-positive-guard violations, 189s; the receipt records `dirty: true` because the run predates the commit of the LLM-preset work). Older 2026-11-19 receipts predate provenance capture and say so explicitly. The nightly benchmark job re-verifies this on every run — a recall regression fails the build, and the badge above turns red. Run your own numbers: `node benchmark/run-recall-benchmark.mjs --base-url <juice-shop-url> --min-recall 1.0`.
 
 ---
 ## GitHub Action
 
-QualityPilot can replay an exported test plan against a preview deployment and fail the workflow when the configured quality gate is not met.
+Testigator can replay an exported test plan against a preview deployment and fail the workflow when the configured quality gate is not met.
 
 ```yaml
-name: QualityPilot QA
+name: Testigator QA
 
 on:
   pull_request:
@@ -434,10 +524,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Replay QualityPilot plan
-        uses: saqi-saqi/QualityPilot@v0.5.0
+      - name: Replay Testigator plan
+        uses: saqi-saqi/Testigator@v0.5.0
         with:
-          plan: qualitypilot/plan.json
+          plan: testigator/plan.json
           url: ${{ secrets.PREVIEW_URL }}
           fail_on: critical,high
           min_score: 80
@@ -446,7 +536,7 @@ jobs:
 The action runs the exported plan without an LLM key, writes a summary to the GitHub Actions job summary, and returns a failing exit code when the quality gate is violated. Export a plan with:
 
 ```bash
-qualitypilot export plan.json --format plan --out qualitypilot
+testigator export plan.json --format plan --out testigator
 ```
 
 Use a release tag such as `v0.5.0` in production workflows so upgrades are deliberate.
@@ -459,14 +549,14 @@ Action inputs: `plan`, `url`, `fail_on`, `min_score`, `max_pages` (caps the plan
 One plan, two destinations:
 
 ```bash
-qualitypilot export plan.json --format both --out ./export
+testigator export plan.json --format both --out ./export
 ```
 
 - **`plan.json`** — the portable plan artifact. Feed it to CI plan replay:
   inferred once, replayed forever without an AI key. The plan is
   schema-validated and normalized on export — what you export is exactly
   what replays.
-- **`<flow>.spec.ts` + `qualitypilot-healer.ts`** — standalone Playwright
+- **`<flow>.spec.ts` + `testigator-healer.ts`** — standalone Playwright
   specs. Interaction steps (click/fill/select/check/…) route through the
   self-healing selector ladder; `${VAR}` test-data placeholders resolve from
   the environment at runtime. Multi-role: pass
@@ -474,7 +564,7 @@ qualitypilot export plan.json --format both --out ./export
   `test.describe` blocks with `test.use({ storageState })`.
 
 Scope: flows only — perf budgets, a11y rules, fuzz targets and visual
-baselines stay QualityPilot-native (they need the runtime).
+baselines stay Testigator-native (they need the runtime).
 
 ## 📋 Publish Results Where QA Lives
 
@@ -490,7 +580,7 @@ The run page exports a **WCAG evidence report** (JSON): per-criterion pass/fail/
 
 ## 🧭 Open Source Core vs. Hosted Cloud Seams
 
-QualityPilot is developed as an open-core architecture. Everything needed to test, crawl, plan, and monitor your web applications is 100% free and open source.
+Testigator is developed as an open-core architecture. Everything needed to test, crawl, plan, and monitor your web applications is 100% free and open source.
 
 | Capability | Open-Source Engine (This Repo) | Future Hosted Cloud Tier |
 | :--- | :---: | :---: |
@@ -523,23 +613,41 @@ QualityPilot is developed as an open-core architecture. Everything needed to tes
 | :--- | :--- |
 | `Executable doesn't exist ... npx playwright install` | Browsers download separately from the npm package: run `npx playwright install chromium` (Firefox/WebKit are only needed for multi-browser matrix scans) |
 | `better-sqlite3` build errors during install | Prebuilt binaries cover Node 20/22/24 on Windows/macOS/Linux (x64 + arm64). If your platform has no prebuild, install build tools (Windows: VS Build Tools "Desktop development with C++"; macOS: Xcode CLT; Linux: `build-essential` + `python3`) and reinstall |
-| Scanning `http://localhost:...` is blocked | Pass `--allow-private` to `qualitypilot check`, or set `SQA_ALLOW_PRIVATE=true` (CLI env or the MCP server `env` block) - the SSRF guard blocks private ranges by default |
+| Scanning `http://localhost:...` is blocked | Pass `--allow-private` to `testigator check`, or set `SQA_ALLOW_PRIVATE=true` (CLI env or the MCP server `env` block) - the SSRF guard blocks private ranges by default |
 | `[llmProvider] No LLM provider configured ... using MockProvider` | Informational, not an error: deterministic heuristics replace AI planning. See *Zero-config demo* above |
-| `ERROR: Usage: ...` and exit code 64 | CLI arguments were invalid - check the options list via `qualitypilot` with no arguments |
+| `ERROR: Usage: ...` and exit code 64 | CLI arguments were invalid - check the options list via `testigator` with no arguments |
 
 ## 🧪 Testing
 
-QualityPilot has a comprehensive unit and integration test suite:
+Testigator has a comprehensive unit and integration test suite:
 
 ```bash
 npm test                            # full suite (1,000+ tests)
 node scripts/run-tests.mjs cli      # subset: pass a path fragment (e.g. cli, fuzz, matrix)
 ```
-All **1,100+ tests** (240 suites) run via Node.js native test runner in ~2 minutes, with zero test-framework dependencies — the runner ships with every supported Node version (22.19+). The suite covers the CLI gate and exit codes, the execution matrix and classifier, every executor (including the injection differential engine), report invariants, SSRF validation, and the recall-harness scoring logic.
+All **1,190+ tests** (250+ suites) run via Node.js native test runner in ~3.5 minutes, with zero test-framework dependencies — the runner ships with every supported Node version (22.19+). The suite covers the CLI gate and exit codes, the execution matrix and classifier, every executor (including the injection differential engine), report invariants, SSRF validation, and the recall-harness scoring logic.
+
+---
+
+## Namesake & Directory Orientation
+
+*(Checked 2026-11-25 — factual orientation note; see [`docs/DISCOVERY_AND_LISTINGS.md`](docs/DISCOVERY_AND_LISTINGS.md) and [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md) for ongoing review.)*
+
+| Project | Maintainer / Location | Stack & License | Package / Binary |
+| :--- | :--- | :--- | :--- |
+| **This project (`Testigator`)** | [`saqi-saqi/Testigator`](https://github.com/saqi-saqi/Testigator) | Node.js `>=22.19`, Playwright, SQLite (`better-sqlite3`), `Apache-2.0` | npm `testigator` · CLI `testigator` · MCP `testigator-mcp` (legacy `qualitypilot` alias included) |
+| **`virinchisai/QualityPilot`** | [`virinchisai/QualityPilot`](https://github.com/virinchisai/QualityPilot) | Python (`FastAPI`, `Pytest`, Playwright/Selenium, SQLite), `MIT` | Unrelated TestOps repository using the prior name |
+| **`qlens.dev` (`@qlens/cli`)** | [`@qlens/cli`](https://www.npmjs.com/package/@qlens/cli) | Independent scoped npm package | Unrelated CLI package describing itself as QualityPilot |
+
+---
+
+## 📜 Release Hygiene
+
+Before tagging a release or publishing to npm, follow [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md) (automated test + README path audit `scripts/verify-readme-paths.mjs`, BFCL/external metric receipt checks in `benchmark/receipts/`, and quarterly external-listing reviews).
 
 ---
 
 ## 📜 License
 
 Licensed under the **[Apache License, Version 2.0](LICENSE)**.
-You may freely use, modify, distribute, and self-host QualityPilot for personal or commercial projects.
+You may freely use, modify, distribute, and self-host Testigator for personal or commercial projects.
