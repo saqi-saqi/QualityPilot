@@ -50,7 +50,7 @@ describe('export/planJson', () => {
 
     assert.equal(artifact.kind, PLAN_EXPORT_KIND);
     assert.equal(artifact.formatVersion, 1);
-    assert.equal(artifact.generator.name, 'QualityPilot');
+    assert.equal(artifact.generator.name, 'Testigator');
     assert.equal(artifact.source, 'unit test');
     assert.ok(artifact.exportedAt);
     // Defaults materialized by normalization:
@@ -87,10 +87,21 @@ describe('export/planJson', () => {
     assert.deepEqual(reimported, artifact.plan);
   });
 
+  it('importPlanJson stays backward-compatible with legacy qualitypilot/plan envelopes', () => {
+    const legacy = exportPlanJson({
+      schemaVersion: 1,
+      id: 'legacy-rt',
+      targetUrl: 'https://example.com',
+      flows: [{ name: 'F', startUrl: 'https://example.com/a', steps: [{ action: 'assertVisible', selector: '#ok' }] }],
+    });
+    const reimported = importPlanJson({ ...legacy, kind: 'qualitypilot/plan' });
+    assert.equal(reimported.id, 'legacy-rt');
+  });
+
   it('importPlanJson rejects foreign envelopes', () => {
-    assert.throws(() => importPlanJson({ kind: 'other/thing', plan: {} }), /not a QualityPilot plan export/i);
+    assert.throws(() => importPlanJson({ kind: 'other/thing', plan: {} }), /not a Testigator plan export/i);
     assert.throws(() => importPlanJson({ kind: PLAN_EXPORT_KIND }), /artifact\.plan is missing/i);
-    assert.throws(() => importPlanJson({}), /not a QualityPilot plan export/i);
+    assert.throws(() => importPlanJson({}), /not a Testigator plan export/i);
   });
 });
 
@@ -197,13 +208,13 @@ describe('export CLI', () => {
     fs.writeFileSync(planPath, JSON.stringify(fullCoveragePlan('https://example.com')));
     const outDir = path.join(tmp, 'out');
 
-    const code = await exportMain(['qualitypilot', 'export', planPath, '--out', outDir]);
+    const code = await exportMain(['testigator', 'export', planPath, '--out', outDir]);
     assert.equal(code, 0);
     assert.ok(fs.existsSync(path.join(outDir, 'plan.json')));
     assert.ok(fs.existsSync(path.join(outDir, 'checkout-journey.spec.ts')));
     assert.ok(fs.existsSync(path.join(outDir, HEALER_FILENAME)));
 
-    const usage = await exportMain(['qualitypilot', 'export']);
+    const usage = await exportMain(['testigator', 'export']);
     assert.equal(usage, 64);
     fs.rmSync(tmp, { recursive: true, force: true });
   });
@@ -212,7 +223,7 @@ describe('export CLI', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'qp-export-'));
     const planPath = path.join(tmp, 'p.json');
     fs.writeFileSync(planPath, JSON.stringify(fullCoveragePlan('https://example.com')));
-    const code = await exportMain(['qualitypilot', 'export', planPath, '--format', 'wat']);
+    const code = await exportMain(['testigator', 'export', planPath, '--format', 'wat']);
     assert.equal(code, 64);
     fs.rmSync(tmp, { recursive: true, force: true });
   });

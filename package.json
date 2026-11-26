@@ -1,16 +1,16 @@
 {
-  "name": "qualitypilot",
+  "name": "testigator",
   "version": "0.5.0",
   "type": "module",
-  "description": "QualityPilot - Autonomous software QA agent: explores, plans, and executes comprehensive web + API test suites",
+  "description": "Testigator (saqi-saqi/Testigator) — Self-hosted, deterministic-first Node.js + Playwright QA quality-gate agent & MCP server with SQLite TestOps state",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/saqi-saqi/QualityPilot.git"
+    "url": "git+https://github.com/saqi-saqi/Testigator.git"
   },
-  "homepage": "https://github.com/saqi-saqi/QualityPilot#readme",
+  "homepage": "https://github.com/saqi-saqi/Testigator#readme",
   "bugs": {
-    "url": "https://github.com/saqi-saqi/QualityPilot/issues"
+    "url": "https://github.com/saqi-saqi/Testigator/issues"
   },
   "keywords": [
     "testing",
@@ -29,12 +29,24 @@
     "junit",
     "autonomous-agents",
     "web-testing",
-    "api-testing"
+    "api-testing",
+    "testigator",
+    "quality-gate",
+    "qa-agent",
+    "self-hosted",
+    "sqlite",
+    "visual-regression",
+    "api-contract",
+    "security-testing",
+    "fuzzing",
+    "ollama"
   ],
   "engines": {
     "node": ">=22.19.0"
   },
   "bin": {
+    "testigator": "src/cli/testigator.js",
+    "testigator-mcp": "src/mcp/stdio.js",
     "qualitypilot": "src/cli/qualitypilot.js",
     "qualitypilot-mcp": "src/mcp/stdio.js"
   },

@@ -26,7 +26,7 @@ export async function migrateJsonToSqlite({
   log(`Starting migration from JSON files in ${dataDir}...`);
 
   const shouldClose = !externalDb;
-  const db = externalDb || getDatabase(dbPath || path.join(dataDir, 'qualitypilot.sqlite'));
+  const db = externalDb || getDatabase(dbPath || path.join(dataDir, 'testigator.sqlite'));
   const monitorStore = new SqliteMonitorStore({ db });
   const flakyStore = new SqliteFlakyStore({ db });
 

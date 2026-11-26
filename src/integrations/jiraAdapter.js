@@ -235,10 +235,10 @@ export class JiraAdapter {
   }
 
   /**
-   * List all open issues in this project with the qualitypilot label.
+   * List all open issues in this project with the testigator (or legacy qualitypilot) label.
    */
   async listOpen() {
-    const jql = `project = ${this.projectKey} AND statusCategory != Done AND labels = "qualitypilot" ORDER BY created DESC`;
+    const jql = `project = ${this.projectKey} AND statusCategory != Done AND labels in ("testigator", "qualitypilot") ORDER BY created DESC`;
     const data = await this._api('POST', `/rest/api/${this.apiVersion}/search`, {
       jql,
       maxResults: 100,

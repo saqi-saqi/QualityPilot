@@ -223,7 +223,7 @@ describe('check evaluateGate', () => {
 
 // ─── report command (Phase 10) ───────────────────────────────────────
 
-describe('qualitypilot report command', () => {
+describe('testigator / legacy qualitypilot report command', () => {
   it('writes a standalone HTML report from a saved run JSON', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'sqa-report-test-'));
     try {
@@ -238,11 +238,15 @@ describe('qualitypilot report command', () => {
         ],
       })));
       const htmlPath = path.join(dir, 'report.html');
-      const router = fileURLToPath(new URL('../src/cli/qualitypilot.js', import.meta.url));
+      const router = fileURLToPath(new URL('../src/cli/testigator.js', import.meta.url));
       const res = spawnSync(process.execPath, [router, 'report', runFile, '--html', htmlPath, '--fail-on', 'medium'], { encoding: 'utf8', timeout: 30000 });
       assert.equal(res.status, 0, `report exited ${res.status}: ${res.stderr || res.stdout}`);
       const html = await import('node:fs/promises').then(fs => fs.readFile(htmlPath, 'utf8'));
-      assert.match(html, /QualityPilot report/);
+      assert.match(html, /Testigator report/);
+      // Legacy qualitypilot.js alias still executes cleanly
+      const legacyRouter = fileURLToPath(new URL('../src/cli/qualitypilot.js', import.meta.url));
+      const legacyRes = spawnSync(process.execPath, [legacyRouter, 'report', runFile, '--html', htmlPath, '--fail-on', 'medium'], { encoding: 'utf8', timeout: 30000 });
+      assert.equal(legacyRes.status, 0);
       assert.match(html, /Missing CSP/);
       assert.doesNotMatch(html, /<script/i, 'standalone: no scripts');
     } finally {

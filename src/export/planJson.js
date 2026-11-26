@@ -10,13 +10,14 @@
 
 import { parseTestPlan } from '../services/testPlan.js';
 
-export const PLAN_EXPORT_KIND = 'qualitypilot/plan';
+export const PLAN_EXPORT_KIND = 'testigator/plan';
+export const SUPPORTED_PLAN_EXPORT_KINDS = new Set([PLAN_EXPORT_KIND, 'qualitypilot/plan']);
 export const PLAN_EXPORT_FORMAT_VERSION = 1;
 
 /**
  * Export a plan (raw or already-parsed) as a portable JSON artifact.
  *
- * @param {object} plan — a QualityPilot TestPlan (raw object or parsed)
+ * @param {object} plan — a Testigator TestPlan (raw object or parsed)
  * @param {object} [opts]
  * @param {string} [opts.source] — free-form provenance note (e.g. 'run run_123', 'dashboard draft_456')
  * @returns {{ kind: string, formatVersion: number, exportedAt: string, generator: {name: string}, source: string|null, plan: object }}
@@ -33,7 +34,7 @@ export function exportPlanJson(plan, opts = {}) {
     kind: PLAN_EXPORT_KIND,
     formatVersion: PLAN_EXPORT_FORMAT_VERSION,
     exportedAt: new Date().toISOString(),
-    generator: { name: 'QualityPilot' },
+    generator: { name: 'Testigator' },
     source: typeof opts.source === 'string' ? opts.source : null,
     plan: normalized,
   };
@@ -42,6 +43,7 @@ export function exportPlanJson(plan, opts = {}) {
 /**
  * Import a plan JSON artifact (round-trip of exportPlanJson) and return the
  * parsed TestPlan, ready for replay via createRunWithMatrix / runMatrix.
+ * Accepts both `testigator/plan` and legacy `qualitypilot/plan`.
  *
  * @param {object} artifact — the parsed content of an exported plan JSON file
  * @returns {object} the normalized TestPlan
@@ -51,8 +53,8 @@ export function importPlanJson(artifact) {
   if (!artifact || typeof artifact !== 'object') {
     throw new Error('importPlanJson: artifact must be an object');
   }
-  if (artifact.kind !== PLAN_EXPORT_KIND) {
-    throw new Error(`importPlanJson: not a QualityPilot plan export (expected kind "${PLAN_EXPORT_KIND}", got "${String(artifact.kind)}")`);
+  if (!SUPPORTED_PLAN_EXPORT_KINDS.has(artifact.kind)) {
+    throw new Error(`importPlanJson: not a Testigator plan export (expected kind "${PLAN_EXPORT_KIND}", got "${String(artifact.kind)}")`);
   }
   if (!artifact.plan || typeof artifact.plan !== 'object') {
     throw new Error('importPlanJson: artifact.plan is missing');

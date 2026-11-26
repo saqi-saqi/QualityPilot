@@ -364,7 +364,7 @@ export function buildEvidenceReport(run, opts = {}) {
   return {
     generatedAt: opts.now || new Date().toISOString(),
     tool: {
-      name: 'QualityPilot',
+      name: 'Testigator',
       versions: {
         node: process.version,
         axe: opts.axeVersion ?? run?.axeVersion ?? null,

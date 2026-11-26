@@ -148,7 +148,7 @@ async function main() {
   process.env.SQA_LLM_PROVIDER = opts.provider;
 
   console.log('='.repeat(70));
-  console.log(`QualityPilot — Baseline Benchmark (Phase 0)`);
+  console.log(`Testigator — Baseline Benchmark (Phase 0)`);
   console.log(`Target: ${opts.target} | Runs: ${opts.runs} | Max Pages: ${opts.maxPages}`);
   console.log(`LLM Provider: ${opts.provider}`);
   console.log('='.repeat(70));

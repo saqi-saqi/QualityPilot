@@ -155,7 +155,7 @@ describe('buildTestPlan end-to-end (with mock LLM)', () => {
     assert.equal(plan.schemaVersion, 1);
     assert.ok(plan.id.startsWith('plan_'));
     assert.ok(plan.generatedAt);
-    assert.equal(plan.generatedBy, 'qualitypilot-explorer');
+    assert.equal(plan.generatedBy, 'testigator-explorer');
 
     // Re-validate against the schema as a sanity check
     const reValidated = TestPlan.safeParse(plan);

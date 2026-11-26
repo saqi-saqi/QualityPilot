@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { migrateJsonToSqlite } from '../scripts/migrate-json-to-sqlite.js';
 import { getDatabase, closeDatabase, getSchemaVersion, MIGRATIONS } from '../src/storage/db.js';
-import { getRun } from '../src/storage/runStore.js';
+import { getRun, saveRun } from '../src/storage/runStore.js';
 import { SqliteMonitorStore } from '../src/storage/monitorStore.js';
 
 describe('JSON to SQLite Migration', () => {
@@ -95,5 +95,48 @@ describe('JSON to SQLite Migration', () => {
     // 6. Verify archiving moved the file
     const archiveFiles = await fs.readdir(path.join(tmpDir, 'archive_json'));
     assert.ok(archiveFiles.includes('run_legacy_101.json'));
+  });
+
+  it('exports testigator CLI and preserves qualitypilot CLI alias', async () => {
+    const { runTestigatorCli } = await import('../src/cli/testigator.js');
+    assert.equal(typeof runTestigatorCli, 'function');
+    const code = await runTestigatorCli([]);
+    assert.equal(code, 64);
+  });
+
+  it('auto-migrates legacy qualitypilot.sqlite into testigator.sqlite cleanly', async () => {
+    const { spawnSync } = await import('node:child_process');
+    const legacyDb = path.join(tmpDir, 'qualitypilot.sqlite');
+    const targetDb = path.join(tmpDir, 'testigator.sqlite');
+    const seeded = getDatabase(legacyDb);
+    saveRun({
+      runId: 'run_legacy_db_mig',
+      url: 'https://example.com',
+      status: 'completed',
+      startedAt: '2026-11-25T00:00:00Z',
+      findings: [],
+    }, seeded);
+    seeded.close();
+
+    const script = `
+      import { getDatabase, closeDatabase } from './src/storage/db.js';
+      import { getRun } from './src/storage/runStore.js';
+      const db = getDatabase();
+      const row = getRun('run_legacy_db_mig', db);
+      console.log(JSON.stringify({ found: Boolean(row), url: row?.url || null }));
+      closeDatabase();
+    `;
+    const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: { ...process.env, NODE_ENV: 'test', SQA_DATA_DIR: tmpDir, TESTIGATOR_DB_PATH: '', QUALITYPILOT_DB_PATH: '', SQA_DB_PATH: '' },
+    });
+    assert.equal(res.status, 0, res.stderr);
+    const parsed = JSON.parse(res.stdout.trim());
+    assert.equal(parsed.found, true);
+    assert.equal(parsed.url, 'https://example.com');
+    const files = await fs.readdir(tmpDir);
+    assert.ok(files.includes('testigator.sqlite'), 'migrated database exists as testigator.sqlite');
+    assert.ok(!files.includes('qualitypilot.sqlite'), 'legacy qualitypilot.sqlite was moved');
   });
 });

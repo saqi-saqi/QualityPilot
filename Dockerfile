@@ -1,6 +1,6 @@
-# QualityPilot — autonomous QA agent for web apps and APIs
-# Build:  docker build -t qualitypilot .
-# Run:    docker run -p 8080:8080 --env-file .env -v "$(pwd)/data:/app/data" qualitypilot
+# Testigator — autonomous QA agent for web apps and APIs
+# Build:  docker build -t testigator .
+# Run:    docker run -p 8080:8080 --env-file .env -v "$(pwd)/data:/app/data" testigator
 
 # node:22 matches package.json engines (">=22.19.0") — the image used to be
 # node:20-slim, a runtime the package itself declares unsupported.
@@ -34,7 +34,7 @@ COPY src ./src
 COPY scripts ./scripts
 
 # GitHub Action docker entrypoint must be executable
-RUN chmod +x scripts/docker/qualitypilot-replay-entrypoint.sh
+RUN chmod +x scripts/docker/*.sh
 
 ENV NODE_ENV=production
 ENV SQA_DASHBOARD_PORT=8080

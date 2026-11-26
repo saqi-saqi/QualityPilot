@@ -59,7 +59,7 @@ export function toMarkdown(run, { diff = null, gate = null } = {}) {
   const newCount = diff ? diff.newFindings.length : null;
 
   const lines = [];
-  lines.push(`## QualityPilot QA gate — ${esc(run?.url || 'target')}`);
+  lines.push(`## Testigator QA gate — ${esc(run?.url || 'target')}`);
   lines.push('');
   lines.push(`**${status}** · score **${score}** · ${findings.length} finding(s)` +
     (diff ? ` · **${newCount} new** vs baseline` : ''));

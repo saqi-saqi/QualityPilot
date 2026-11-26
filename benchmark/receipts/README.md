@@ -11,7 +11,7 @@ Scratch output stays in `benchmark/results/` (gitignored); only curated receipts
 
 Each receipt must record:
 
-- QualityPilot version and git commit SHA (when a receipt predates provenance
+- Testigator (formerly QualityPilot) version and git commit SHA (when a receipt predates provenance
   capture in the harness, say so explicitly and leave the SHA null — never guess)
 - Target and exact version
 - Command and benchmark parameters

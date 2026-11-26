@@ -1,12 +1,12 @@
 /**
- * src/cli/export.js — export a QualityPilot plan for CI replay or standalone Playwright.
+ * src/cli/export.js — export a Testigator plan for CI replay or standalone Playwright.
  *
  * Usage:
- *   qualitypilot export <plan.json> [--format plan|specs|both] [--out <dir>]
- *                       [--storage-state <role>=<path>]...
+ *   testigator export <plan.json> [--format plan|specs|both] [--out <dir>]
+ *                     [--storage-state <role>=<path>]...
  *
  *   --format plan   → <out>/plan.json (portable artifact for CI plan replay)
- *   --format specs  → <out>/<flow>.spec.ts + qualitypilot-healer.ts
+ *   --format specs  → <out>/<flow>.spec.ts + testigator-healer.ts
  *   --format both   → both of the above (default)
  *   --storage-state role=path → group flows into per-role describes with
  *                     `test.use({ storageState })` (multi-role export)
@@ -47,7 +47,7 @@ function parseExportArgs(argv) {
       if (eq <= 0) throw new Error('--storage-state expects <role>=<path>');
       opts.storageStateByRole[pair.slice(0, eq)] = pair.slice(eq + 1);
     } else if (a === '--help' || a === '-h') {
-      throw new Error('Usage: qualitypilot export <plan.json> [--format plan|specs|both] [--out <dir>] [--storage-state <role>=<path>]...');
+      throw new Error('Usage: testigator export <plan.json> [--format plan|specs|both] [--out <dir>] [--storage-state <role>=<path>]...');
     } else if (a.startsWith('--')) {
       throw new Error(`Unknown option: ${a}`);
     } else {
@@ -56,7 +56,7 @@ function parseExportArgs(argv) {
   }
 
   if (positional.length !== 1) {
-    throw new Error('Usage: qualitypilot export <plan.json> [--format plan|specs|both] [--out <dir>] [--storage-state <role>=<path>]...');
+    throw new Error('Usage: testigator export <plan.json> [--format plan|specs|both] [--out <dir>] [--storage-state <role>=<path>]...');
   }
   opts.planFile = positional[0];
   return opts;
@@ -74,7 +74,7 @@ export async function exportMain(argv = process.argv) {
   try {
     const raw = JSON.parse(await readFile(opts.planFile, 'utf8'));
     const artifact = exportPlanJson(raw, { source: opts.planFile });
-    const outDir = opts.outDir || path.join(process.cwd(), 'qualitypilot-export');
+    const outDir = opts.outDir || path.join(process.cwd(), 'testigator-export');
     await mkdir(outDir, { recursive: true });
 
     if (opts.format === 'plan' || opts.format === 'both') {

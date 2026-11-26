@@ -169,7 +169,7 @@ export async function publishRunResults(run, opts = {}) {
     if (caseIds.length > 0) {
       // Find-or-create run: include_all:false, only our mapped case ids.
       const runBody = {
-        name: config.runName || `QualityPilot — run ${run?.runId || new Date().toISOString()}`,
+        name: config.runName || `Testigator — run ${run?.runId || new Date().toISOString()}`,
         include_all: false,
         case_ids: caseIds,
       };

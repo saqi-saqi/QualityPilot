@@ -4,8 +4,8 @@
  * A waiver says: "we know about this finding and accept it for now." Waived
  * findings stay in reports (annotated) but do not fail the gate.
  *
- * The conventional file name is `.qualitypilotignore.json`; it is loaded
- * explicitly via `qualitypilot check --ignore-file <file>` (there is no
+ * The conventional file name is `.testigatorignore.json` (legacy `.qualitypilotignore.json`);
+ * it is loaded explicitly via `testigator check --ignore-file <file>` (there is no
  * auto-discovery — CI should always see exactly the waivers it was given).
  *
  * File shape:

@@ -25,7 +25,7 @@ import { createHash } from 'node:crypto';
 import { createZip } from './zipWriter.js';
 import { scrubText, redactFinding } from '../mcp/redact.js';
 
-const SHAREABLE_README = `QualityPilot shareable evidence bundle
+const SHAREABLE_README = `Testigator shareable evidence bundle
 ======================================
 
 This is the SHAREABLE tier: safe to attach to an issue or send to a third party.
@@ -46,7 +46,7 @@ The DEFAULT bundle (self-hosted, access-controlled) contains everything:
 trace + video + screenshots + the as-recorded HAR.
 `;
 
-const DEFAULT_README = `QualityPilot evidence bundle (default tier)
+const DEFAULT_README = `Testigator evidence bundle (default tier)
 ===========================================
 
 Contents:
@@ -111,7 +111,7 @@ export function buildHarFromRun(run, toolVersion) {
   return {
     log: {
       version: '1.2',
-      creator: { name: 'QualityPilot', version: toolVersion || '' },
+      creator: { name: 'Testigator', version: toolVersion || '' },
       pages: (run.pages || []).map((p) => ({
         startedDateTime: run.startedAt || '',
         id: p.url || '',

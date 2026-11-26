@@ -411,7 +411,7 @@ describe('dashboard server (live HTTP)', () => {
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-type') || '', /text\/html/);
     const html = await res.text();
-    assert.match(html, /QualityPilot/);
+    assert.match(html, /Testigator/);
   });
 
   it('CORS: allowed origin is echoed, disallowed origin gets no echo', async () => {

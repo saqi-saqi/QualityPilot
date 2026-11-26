@@ -237,7 +237,7 @@ export function buildIssueBody(finding, runContext = {}) {
   }
 
   lines.push('---');
-  lines.push('_This issue was auto-filed by QualityPilot. Do not edit the title or signature._');
+  lines.push('_This issue was auto-filed by Testigator. Do not edit the title or signature._');
 
   return lines.join('\n');
 }
@@ -304,8 +304,8 @@ export function labelsForFinding(finding, options = {}) {
     labels.push(...options.extraLabels);
   }
 
-  // Always include "qualitypilot" so users can filter
-  labels.push('qualitypilot');
+  // Always include "testigator" so users can filter
+  labels.push('testigator');
 
   // Dedup
   return Array.from(new Set(labels));

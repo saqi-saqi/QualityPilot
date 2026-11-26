@@ -28,7 +28,7 @@ const diff = {
 describe('toMarkdown', () => {
   it('renders header, verdict, severity table and top rules', () => {
     const md = toMarkdown(run, { gate: { failed: true, reason: 'FAIL: findings at or above medium severity threshold' } });
-    assert.match(md, /^## QualityPilot QA gate — https:\/\/example\.com/m);
+    assert.match(md, /^## Testigator QA gate — https:\/\/example\.com/m);
     assert.match(md, /\*\*❌ FAIL\*\* · score \*\*42\/100\*\* · 3 finding\(s\)/);
     assert.match(md, /\| Severity \| Count \|/);
     assert.match(md, /\| critical \| 1 \|/);

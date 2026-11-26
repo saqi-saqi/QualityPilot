@@ -131,7 +131,7 @@ export function toJUnitXml(report) {
     if (!groups.has(name)) groups.set(name, []);
     groups.get(name).push(f);
   }
-  if (groups.size === 0) groups.set('qualitypilot', []);
+  if (groups.size === 0) groups.set('testigator', []);
 
   const suites = [...groups.entries()]
     .map(([name, fs]) => suiteXml(name, fs, report));

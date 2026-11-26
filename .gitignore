@@ -38,3 +38,6 @@ benchmark/receipts/2026-11-19-juiceshop-recall.json
 benchmark/receipts/2026-11-19-conduit-fp-triage.md
 benchmark/receipts/2026-11-19-juiceshop-recall.md
 
+.qualitypilot/
+.testigator/
+testigator-icon/

@@ -1,12 +1,12 @@
-name: 'QualityPilot QA Gate'
+name: 'Testigator QA Gate'
 author: 'saqi-saqi'
-description: 'Replays a QualityPilot plan against a preview URL with the full matrix + classifiers and gates the PR on classified findings.'
+description: 'Replays a Testigator plan against a preview URL with the full matrix + classifiers and gates the PR on classified findings.'
 branding:
   icon: 'shield'
   color: 'blue'
 inputs:
   plan:
-    description: 'Path to the exported plan JSON (qualitypilot/plan artifact — see `qualitypilot export`)'
+    description: 'Path to the exported plan JSON (testigator/plan or legacy qualitypilot/plan — see `testigator export`)'
     required: true
   url:
     description: 'Preview deployment URL to replay the plan against (recorded same-origin URLs are retargeted to this host)'
@@ -21,7 +21,7 @@ inputs:
     description: 'Crawl page cap for the replay'
     default: ''
   ignore_file:
-    description: 'Path to a waivers file (.qualitypilotignore.json shape) — suppressed findings stay visible but do not fail the gate'
+    description: 'Path to a waivers file (.testigatorignore.json shape) — suppressed findings stay visible but do not fail the gate'
     default: ''
   authorized_target:
     description: 'Authorize ACTIVE injection probing (SQLi + DOM-XSS differentials) on non-loopback preview targets. Loopback targets are always probed.'
@@ -35,4 +35,4 @@ outputs:
 runs:
   using: 'docker'
   image: 'Dockerfile'
-  entrypoint: '/app/scripts/docker/qualitypilot-replay-entrypoint.sh'
+  entrypoint: '/app/scripts/docker/testigator-replay-entrypoint.sh'

@@ -22,7 +22,7 @@ const GITHUB_API = 'https://api.github.com';
 const DEFAULT_HEADERS = {
   'Accept': 'application/vnd.github+json',
   'X-GitHub-Api-Version': '2022-11-28',
-  'User-Agent': 'qualitypilot/1.0',
+  'User-Agent': 'testigator/1.0',
 };
 
 export class GitHubAdapter {
@@ -159,11 +159,11 @@ export class GitHubAdapter {
   }
 
   /**
-   * List all open issues with the qualitypilot label.
+   * List all open issues with the testigator label (plus legacy qualitypilot label).
    * Used by the "close resolved" feature.
    */
   async listOpen() {
-    const q = `is:issue is:open repo:${this.repo} label:qualitypilot`;
+    const q = `is:issue is:open repo:${this.repo} label:testigator,qualitypilot`;
     const data = await this._api('GET', `/search/issues?q=${encodeURIComponent(q)}&per_page=100`);
     return data.items.map(this._normalizeIssue);
   }

@@ -3,7 +3,7 @@
     "target": "OWASP Juice Shop v20.4.0 (Windows standalone zip)",
     "baseUrl": "http://localhost:3000",
     "curatedAt": "2026-11-16",
-    "scope": "Black-box scan expectations a working QualityPilot default surface MUST produce. Every expectation carries a liveCheck the harness re-verifies against the running target before scoring, so target drift cannot fake a recall number.",
+    "scope": "Black-box scan expectations a working Testigator default surface MUST produce. Every expectation carries a liveCheck the harness re-verifies against the running target before scoring, so target drift cannot fake a recall number.",
     "denominatorNote": "Only 'expected' entries count toward recall. 'observational' findings are reported but never scored: they depend on crawl depth, app state, or browser behavior and are not deterministic."
   },
   "expected": [

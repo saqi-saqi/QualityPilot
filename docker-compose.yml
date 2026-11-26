@@ -1,11 +1,11 @@
-# QualityPilot — Autonomous QualityPilot
+# Testigator — Autonomous QA Gate
 # Single-command self-hosting: docker compose up -d
 
 services:
-  qualitypilot:
+  testigator:
     build: .
-    image: qualitypilot:latest
-    container_name: qualitypilot
+    image: testigator:latest
+    container_name: testigator
     ports:
       # Loopback only — never publish the dashboard on 0.0.0.0 by default.
       # To reach it from another machine, front it with a reverse proxy that

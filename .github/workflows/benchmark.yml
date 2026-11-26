@@ -2,7 +2,7 @@
 #
 # Nightly + on-demand: boots the pinned OWASP Juice Shop version, runs the
 # recall harness (benchmark/run-recall-benchmark.mjs) against the DEFAULT
-# `qualitypilot check` surface, and FAILS the job when deterministic recall
+# `testigator check` surface, and FAILS the job when deterministic recall
 # drops below 100% or a must-not-find (false-positive guard) fires.
 #
 # The badge in README.md tracks this workflow. Receipts (recall .json/.md)

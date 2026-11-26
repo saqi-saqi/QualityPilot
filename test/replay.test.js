@@ -76,7 +76,7 @@ describe('replay — CLI', () => {
     try {
       const planPath = path.join(tmp, 'plan.json');
       fs.writeFileSync(planPath, JSON.stringify(planArtifact(fx.url)));
-      const code = await replayMain(['qualitypilot', 'replay', planPath, '--timeout', '180000']);
+      const code = await replayMain(['testigator', 'replay', planPath, '--timeout', '180000']);
       assert.equal(code, 0, 'clean fixture plan must pass the gate');
     } finally {
       if (fx.server?.close) fx.server.close();
@@ -86,9 +86,9 @@ describe('replay — CLI', () => {
 
   it('missing plan file → exit 70; missing args → exit 64', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'qp-replay-'));
-    const code = await replayMain(['qualitypilot', 'replay', path.join(tmp, 'nope.json')]);
+    const code = await replayMain(['testigator', 'replay', path.join(tmp, 'nope.json')]);
     assert.equal(code, 70);
-    const usage = await replayMain(['qualitypilot', 'replay']);
+    const usage = await replayMain(['testigator', 'replay']);
     assert.equal(usage, 64);
     fs.rmSync(tmp, { recursive: true, force: true });
   });
@@ -101,10 +101,10 @@ describe('replay — CLI', () => {
     try {
       const planPath = path.join(tmp, 'plan.json');
       fs.writeFileSync(planPath, JSON.stringify(planArtifact(fx.url)));
-      const code = await replayMain(['qualitypilot', 'replay', planPath, '--timeout', '180000']);
+      const code = await replayMain(['testigator', 'replay', planPath, '--timeout', '180000']);
       assert.equal(code, 0);
       const summary = fs.readFileSync(summaryPath, 'utf8');
-      assert.match(summary, /## QualityPilot replay — replay-plan/);
+      assert.match(summary, /## Testigator replay — replay-plan/);
       assert.match(summary, /Gate \|/);
     } finally {
       delete process.env.GITHUB_STEP_SUMMARY;
@@ -127,7 +127,7 @@ describe('replay — CLI', () => {
       const planPath = path.join(tmp, 'plan.json');
       fs.writeFileSync(planPath, JSON.stringify(artifact));
       const repoRoot = fileURLToPath(new URL('..', import.meta.url));
-      const res = spawnSync(process.execPath, ['src/cli/qualitypilot.js', 'replay', planPath, '--timeout', '60000'], {
+      const res = spawnSync(process.execPath, ['src/cli/testigator.js', 'replay', planPath, '--timeout', '60000'], {
         cwd: repoRoot,
         encoding: 'utf8',
         env: {

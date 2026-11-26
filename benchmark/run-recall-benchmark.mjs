@@ -2,7 +2,7 @@
 /**
  * benchmark/run-recall-benchmark.mjs — Juice Shop recall harness.
  *
- * Measures the recall of a full-surface `qualitypilot check` scan against a
+ * Measures the recall of a full-surface `testigator check` scan against a
  * curated ground truth of verifiable defect expectations on OWASP Juice Shop
  * (benchmark/groundtruth-juiceshop.json), plus must-not-find assertions that
  * guard against known false-positive modes.
@@ -13,7 +13,7 @@
  *     expectation no longer holds on the target (e.g. the app added CSP),
  *     the entry is excluded from the denominator and reported — it can never
  *     silently deflate or inflate recall.
- *   • Default surface only: the scan is exactly what `qualitypilot check`
+ *   • Default surface only: the scan is exactly what `testigator check`
  *     runs (matrix path, inferred plan, default executor list). No special
  *     benchmark mode — recall is measured on the product a user gets.
  *   • Deterministic denominator: only `expected` entries score. Crawl-depth-
@@ -240,7 +240,7 @@ function toolingProvenance() {
 function renderMarkdown({ meta, result, report, elapsedMs, scored, detected, missed, stale, fpHits, observational }) {
   const pct = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
   const lines = [];
-  lines.push(`# QualityPilot recall benchmark — ${meta.target}`);
+  lines.push(`# Testigator recall benchmark — ${meta.target}`);
   lines.push('');
   lines.push(`- **Run:** ${report.runId} · status \`${report.status}\` · score ${report.score ?? '—'}`);
   // Audit M-8: a receipt must state the tooling it describes (version +
@@ -248,7 +248,7 @@ function renderMarkdown({ meta, result, report, elapsedMs, scored, detected, mis
   if (meta.tooling) {
     const t = meta.tooling;
     const commit = t.commit ? t.commit.slice(0, 12) : 'not recorded';
-    lines.push(`- **Tooling:** qualitypilot@${t.version} · commit \`${commit}\`${t.dirty ? ' · dirty working tree' : ''}`);
+    lines.push(`- **Tooling:** testigator@${t.version} · commit \`${commit}\`${t.dirty ? ' · dirty working tree' : ''}`);
   }
   lines.push(`- **Scan params:** max-pages ${meta.maxPages}, max-depth ${meta.maxDepth}, timeout ${meta.timeout}ms, wall time ${Math.round(elapsedMs / 1000)}s`);
   lines.push(`- **Findings (post-dedup):** ${result.findingsTotal} distinct rules: ${result.byRuleSize}`);

@@ -1,8 +1,8 @@
 /**
- * src/cli/report.js — `qualitypilot report <run.json>`: turn a saved run
+ * src/cli/report.js — `testigator report <run.json>`: turn a saved run
  * report into a shareable artifact.
  *
- *   qualitypilot report <run.json> --html report.html [--ignore-file f] [--fail-on <sev|list>]
+ *   testigator report <run.json> --html report.html [--ignore-file f] [--fail-on <sev|list>]
  *
  * The HTML output is a single self-contained file (inline CSS, no scripts,
  * no external assets) — the thing you attach to a ticket or a release.
@@ -33,7 +33,7 @@ function parseArgs(argv) {
     else if (a === '--fail-on') { opts.failOn = args[++i]; if (!opts.failOn) throw new Error('--fail-on requires a severity or list'); }
     else throw new Error(`Unknown argument: ${a}`);
   }
-  if (!runFile) throw new Error('Usage: qualitypilot report <run.json> [--html <out.html>] [--markdown <out.md>] [--ignore-file <f>] [--fail-on <sev|list>]');
+  if (!runFile) throw new Error('Usage: testigator report <run.json> [--html <out.html>] [--markdown <out.md>] [--ignore-file <f>] [--fail-on <sev|list>]');
   return { runFile, ...opts };
 }
 

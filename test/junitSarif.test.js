@@ -166,7 +166,7 @@ describe('toJUnitXml', () => {
   it('handles empty findings gracefully', () => {
     const xml = toJUnitXml({ runId: 'r1', score: 100, findings: [] });
     assertXmlWellFormed(xml);
-    assert.match(xml, /<testsuite name="qualitypilot" tests="0" failures="0" skipped="0"/);
+    assert.match(xml, /<testsuite name="testigator" tests="0" failures="0" skipped="0"/);
   });
 
   it('handles null/undefined report', () => {
@@ -192,13 +192,13 @@ describe('toJUnitXml', () => {
 // ─── toSarif ─────────────────────────────────────────────────────────
 
 describe('toSarif', () => {
-  it('emits the SARIF 2.1.0 envelope and QualityPilot driver', () => {
+  it('emits the SARIF 2.1.0 envelope and Testigator driver', () => {
     const sarif = toSarif(sampleRun);
     assert.equal(sarif.version, '2.1.0');
     assert.equal(sarif.$schema, 'https://json.sarif.org/schema/2.1.0/sarif-schema.json');
     assert.equal(sarif.runs.length, 1);
-    assert.equal(sarif.runs[0].tool.driver.name, 'QualityPilot');
-    assert.equal(sarif.runs[0].tool.driver.informationUri, 'https://github.com/saqi-saqi/QualityPilot');
+    assert.equal(sarif.runs[0].tool.driver.name, 'Testigator');
+    assert.equal(sarif.runs[0].tool.driver.informationUri, 'https://github.com/saqi-saqi/Testigator');
   });
 
   it('maps every finding to a result with locations and fingerprints', () => {

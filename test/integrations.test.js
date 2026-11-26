@@ -669,7 +669,7 @@ describe('XrayAdapter.publishRunResults', () => {
     const imp = calls[1];
     assert.equal(imp.url, 'https://xray.cloud.getxray.app/api/v2/import/execution');
     assert.equal(imp.headers.Authorization, 'Bearer JWT_TOKEN');
-    assert.equal(imp.body.info.summary, 'QualityPilot — run run_88');
+    assert.equal(imp.body.info.summary, 'Testigator — run run_88');
     assert.equal(imp.body.info.start, run.startedAt);
     assert.equal(imp.body.info.finish, run.completedAt);
     const byTest = Object.fromEntries(imp.body.tests.map((t) => [t.testKey, t.status]));

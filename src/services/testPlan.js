@@ -248,7 +248,7 @@ const TestPlanObject = z.object({
   id: z.string().min(1),                            // UUID
   targetUrl: z.string().url(),
   generatedAt: z.string().datetime().optional(),
-  generatedBy: z.string().default('qualitypilot-explorer'),
+  generatedBy: z.string().default('testigator-explorer'),
   status: z.enum(['draft', 'proposed', 'approved', 'executing', 'completed', 'failed'])
     .default('draft'),
   notes: z.string().default(''),

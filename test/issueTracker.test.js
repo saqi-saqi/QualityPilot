@@ -116,9 +116,9 @@ describe('buildIssueBody', () => {
     assert.match(body, /\*\*Target:\*\* https:\/\/example.com/);
   });
 
-  it('includes the qualitypilot footer', () => {
+  it('includes the testigator footer', () => {
     const body = buildIssueBody(sampleFinding);
-    assert.match(body, /auto-filed by QualityPilot/);
+    assert.match(body, /auto-filed by Testigator/);
   });
 
   it('handles minimal finding', () => {
@@ -171,7 +171,7 @@ describe('groupFindingsBySignature', () => {
 // ─── labelsForFinding ────────────────────────────────────────────────
 
 describe('labelsForFinding', () => {
-  it('includes severity label, category label, origin label, and qualitypilot', () => {
+  it('includes severity label, category label, origin label, and testigator', () => {
     const labels = labelsForFinding({
       severity: 'high',
       category: 'links',
@@ -180,7 +180,7 @@ describe('labelsForFinding', () => {
     assert.ok(labels.includes('P1-high'));
     assert.ok(labels.includes('category:links'));
     assert.ok(labels.includes('origin:first-party'));
-    assert.ok(labels.includes('qualitypilot'));
+    assert.ok(labels.includes('testigator'));
   });
 
   it('includes extraLabels from options', () => {
@@ -195,15 +195,15 @@ describe('labelsForFinding', () => {
   it('deduplicates labels', () => {
     const labels = labelsForFinding(
       { severity: 'high', category: 'links' },
-      { extraLabels: ['qualitypilot', 'links'] }
+      { extraLabels: ['testigator', 'links'] }
     );
-    const sqaCount = labels.filter(l => l === 'qualitypilot').length;
+    const sqaCount = labels.filter(l => l === 'testigator').length;
     assert.equal(sqaCount, 1);
   });
 
   it('handles missing severity', () => {
     const labels = labelsForFinding({ category: 'links' });
-    assert.ok(labels.includes('qualitypilot'));
+    assert.ok(labels.includes('testigator'));
     assert.ok(labels.includes('category:links'));
   });
 });

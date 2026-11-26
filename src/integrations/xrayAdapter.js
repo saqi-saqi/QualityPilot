@@ -179,7 +179,7 @@ export async function publishRunResults(run, opts = {}) {
     if (tests.length > 0) {
       const executionBody = {
         info: {
-          summary: opts.summary || `QualityPilot — run ${run?.runId || new Date().toISOString()}`,
+          summary: opts.summary || `Testigator — run ${run?.runId || new Date().toISOString()}`,
         },
         tests,
       };
